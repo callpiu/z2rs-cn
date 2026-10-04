@@ -84,6 +84,9 @@ pub struct PackManifest {
     /// Scene layers, drawn in order (later entries over earlier ones).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<LayerEntry>,
+    /// Whole-character frames, sampled independently of the NES pose cadence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actor_clips: Vec<crate::actors::ActorClipEntry>,
     /// Free-form artist notes (any JSON object); not interpreted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub groups: Option<serde_json::Value>,
@@ -581,6 +584,7 @@ pub struct HdPack {
     variant_count: usize,
     sprite_alpha_art: bool,
     layers: Vec<Layer>,
+    actor_clips: Vec<crate::actors::ActorClip>,
     /// Largest vertical bleed of any cell, in NES pixels.
     max_bleed_v: u8,
 }
@@ -995,6 +999,11 @@ impl HdPack {
             }
         }
 
+        let actor_clips = crate::actors::load_clips(&m.actor_clips, alpha_threshold, read)
+            .map_err(|msg| PackError::Json {
+                file: PACK_MANIFEST.into(),
+                msg,
+            })?;
         Ok(Self {
             name: m.name.clone(),
             author: m.author.clone(),
@@ -1009,6 +1018,7 @@ impl HdPack {
             variant_count,
             sprite_alpha_art,
             layers,
+            actor_clips,
             max_bleed_v,
         })
     }
@@ -1024,6 +1034,11 @@ impl HdPack {
     #[must_use]
     pub fn layers(&self) -> &[Layer] {
         &self.layers
+    }
+
+    #[must_use]
+    pub fn actor_clips(&self) -> &[crate::actors::ActorClip] {
+        &self.actor_clips
     }
 
     /// Largest top or bottom `bleed` of any cell, in NES pixels.

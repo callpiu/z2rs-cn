@@ -56,6 +56,33 @@ A pack can set `"sprite_alpha": "art"` in `pack.json`. A replaced sprite then ta
 
 `layers[]` places whole images in one scene: a sky or far hills behind the background (`"depth": "back"`), or art over the background tiles (`"front"`). A layer can follow the camera at a fraction of its speed (`scroll`, a percentage), repeat horizontally, cover only chosen tiles (`over_tiles`), and apply to one scene through `when` (`world`, `region`, `scene`). `when.background_tile` (`x`, `y`, `page`, `tile`, and optionally `colors`) limits a layer to screens that show that background tile at that pixel of the NES picture, which keeps a title backdrop off the save menu and out of gameplay. Pick the anchor from captures of the screen you want and check that it is absent everywhere else. `paint_sheets.py cut --layer` adds them; its `--help` lists the options. Older builds ignore these keys and draw every sprite inside its original outline.
 
+## Actor animations
+
+A pack can also replace Link's whole body with its own animation frames instead of tile by tile. `actor_clips[]` in `pack.json` names a character, a clip, a frame rate and a list of transparent PNG frames with a pivot each. While a clip plays, the renderer draws that one image where the game draws Link, so poses that share a CHR tile no longer show seams. Tile replacements keep working for everything else, and a character or clip the pack leaves out falls back to the tile art.
+
+```json
+"actor_clips": [{
+  "character": "link",
+  "name": "walk",
+  "fps": 60.0988,
+  "looped": true,
+  "frames": [
+    { "file": "actors/walk/0000.png", "pivot": [28.5, 122] },
+    { "file": "actors/walk/0001.png", "pivot": [29.5, 121] }
+  ]
+}]
+```
+
+The renderer draws each frame in pack pixels at the pack's scale and does not resize it. `pivot` is the point in each frame, measured from its top left corner, that lands on the same spot of Link's skeleton every frame; it may lie outside the image. Keep the pivots your export tool wrote rather than centering each crop. In side view that spot is Link's feet; on the overworld map it is the two 8x16 sprite cells of the original, so author map clips at half the side-view height. Do not bake jump travel or knockback into the frames, because the game already moves Link.
+
+`character` is `link` for player 1 and `link_red` for player 2. The side-view clip names are `idle`, `walk`, `attack_windup`, `attack`, `crouch_idle`, `crouch_attack`, `jump_rise`, `jump_apex`, `fall`, `jump_attack`, `up_thrust_hold`, `down_thrust_hold`, `hurt`, `death`, `fairy_fly` and `item_get`. Player 1 also uses `cast_spell`, `crystal_place` and `victory`. On the overworld the names are `overworld_walk_right`, `overworld_walk_left`, `overworld_walk_down`, `overworld_walk_up` and the four `overworld_idle_*` clips; player 2 is not drawn on the overworld in co-op, so it has no map clips. A pack may store clips under other names, but the game never picks them. The sword windup is its own state, so a thrust clip should start with the blade already out.
+
+A clip's time comes from emulated frames at 60.0988 Hz, so a paused game holds the pose. Changing action or seeking backwards restarts the clip. `looped` defaults to `false`, which holds the last frame until the action changes. The original sprites still decide visibility, injury blinking, priority and what hides behind the background. Held items and sword beams stay separate sprites and come from the sheets.
+
+The frame rate must be between 1 and 240, a pack may hold at most 512 clips, each with 1 to 4096 frames, and a frame PNG has the same 4096 pixel edge limit as a sheet. Alpha is on or off, as for sheets. Every frame is kept decoded in memory, up to 512 MiB in all. `cargo xtask hdpack check` validates the files and reports the frame count of each clip.
+
+A pack that uses `actor_clips` needs z2rs 0.5.1 or newer. Older builds ignore keys they do not know, so they load the pack without an error and draw Link from the sheets.
+
 ## How packs work
 
 Three things identify every tile the PPU draws: the CHR page it came from, its tile index, and the three opaque colours of the palette it was drawn in. A pack maps those keys to cells in a PNG sheet. Where a tile has no cell, z2rs scales up the original art instead, so a half-finished pack plays fine and you can repaint the game a few tiles at a time.
@@ -71,4 +98,5 @@ These apply to both the desktop app and the browser build.
 - A background cell stays inside its 8x8 tile, and a sprite reaches at most 8 NES pixels past its box (`bleed`, with `"sprite_alpha": "art"`). Without that key, replaced sprites are also cut to their original opaque pixels. Art that belongs to no tile goes in a layer.
 - Each tile identity has one cell. Every place the game draws that tile in those colours shows the same art. A layer with `over_tiles` can vary a repeated tile by position.
 - Greyscale lines, lines with a mid-line `$2001` or palette write, and lines where fine X changed mid-line keep the original art, because the slot-to-pixel mapping doesn't hold for the whole line. In practice that is the row under the status bar and effects such as the palace-entry fade.
+- Tile replacements are still images. Only the player can be animated, through `actor_clips`. There are no per-scanline palette effects.
 - Layers are the most expensive part of a pack. The worst case (every tile replaced plus three layers) takes about 13.5 ms a frame at 4x widescreen on an Apple Silicon Mac, which still fits a 60 Hz frame. A pack without layers takes about 2 ms.

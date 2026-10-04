@@ -115,6 +115,7 @@ pub mod player_magic;
 /// Gated behind `interp` with the interpreter (needs `Game` + `TrapTable`).
 #[cfg(feature = "interp")]
 pub mod player_traps;
+pub mod player_visual;
 /// Real-PPU binding for the interpreter bus.
 ///
 /// Gated behind `interp` with the interpreter (implements `cpu::PpuBus`).

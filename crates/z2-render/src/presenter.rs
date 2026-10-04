@@ -58,6 +58,7 @@ impl Default for PresentConfig {
 /// Owns every per-frame buffer and composes one frame per call.
 #[derive(Debug)]
 pub struct Presenter {
+    actor_clocks: Vec<crate::actors::ActorClock>,
     cfg: PresentConfig,
     comp: Compositor,
     /// Indexed widescreen buffer (unused when `margin_tiles == 0`).
@@ -80,6 +81,7 @@ impl Presenter {
         margins.fill_left_clip = cfg.fill_left_clip;
         margins.fill_right_clip = cfg.fill_right_clip;
         let mut me = Self {
+            actor_clocks: Vec::new(),
             rgba: vec![0; comp.rgba_len()],
             wide: WideFrame::new(cfg.margin_tiles),
             comp,
@@ -128,6 +130,8 @@ impl Presenter {
     /// # Errors
     /// [`ComposeError::BadScale`] when the resulting scale is out of range.
     pub fn set_pack(&mut self, pack: Option<HdPack>) -> Result<(), ComposeError> {
+        self.actor_clocks.clear();
+        self.comp.actors.clear();
         self.pack = pack;
         self.comp
             .reconfigure(self.effective_scale(), self.cfg.margin_tiles)?;
@@ -139,6 +143,71 @@ impl Presenter {
     #[must_use]
     pub fn pack(&self) -> Option<&HdPack> {
         self.pack.as_ref()
+    }
+
+    /// Advance animation from emulated time, not calls to present. Repainting
+    /// a paused frame does not advance it. Each player has a separate clock;
+    /// action changes and backwards seeks restart that player's clip.
+    pub fn set_actors(&mut self, frame: u64, hz: f64, inputs: &[crate::actors::ActorInput<'_>]) {
+        self.comp.actors.clear();
+        let Some(pack) = &self.pack else {
+            self.actor_clocks.clear();
+            return;
+        };
+        if !hz.is_finite() || hz <= 0.0 {
+            self.actor_clocks.clear();
+            return;
+        }
+        self.actor_clocks.retain(|clock| {
+            inputs.iter().any(|i| {
+                i.id == clock.id
+                    && pack.actor_clips()[clock.clip].character == i.character
+                    && pack.actor_clips()[clock.clip].name == i.clip
+            })
+        });
+        for i in inputs.iter().take(16) {
+            if i.oam_mask == 0
+                || i.priority_oam >= 64
+                || !i
+                    .position
+                    .iter()
+                    .all(|v| v.is_finite() && v.abs() <= 8192.0)
+            {
+                continue;
+            }
+            let Some(clip) = pack
+                .actor_clips()
+                .iter()
+                .position(|c| c.character == i.character && c.name == i.clip)
+            else {
+                continue;
+            };
+            if !self.actor_clocks.iter().any(|c| c.id == i.id) {
+                self.actor_clocks.push(crate::actors::ActorClock {
+                    id: i.id,
+                    clip,
+                    began: frame,
+                    last: frame,
+                });
+            }
+            let clock = self.actor_clocks.iter_mut().find(|c| c.id == i.id).unwrap();
+            if clock.clip != clip || frame < clock.last {
+                clock.clip = clip;
+                clock.began = frame;
+            }
+            clock.last = frame;
+            let age = frame.saturating_sub(clock.began) as f64 / hz;
+            self.comp.actors.push(crate::actors::ActorInstance {
+                clip,
+                frame: pack.actor_clips()[clip].frame_index(age),
+                position: i.position,
+                flip_h: i.flip_h,
+                oam_mask: i.oam_mask,
+                priority_oam: i.priority_oam,
+                behind: false,
+            });
+        }
+        self.comp.actors.sort_by_key(|i| i.priority_oam);
     }
 
     /// Override the display palette (a pack's own palette wins when set).

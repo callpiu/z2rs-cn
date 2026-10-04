@@ -1593,8 +1593,8 @@ pub fn classify_dropped_file(path: &Path) -> DroppedFileKind {
 /// Headless-testable window UI state: ROM presence, pause, and focus memory.
 ///
 /// The event loop owns one of these field-by-field (`has_rom`, `paused`,
-/// `ever_focused`); this struct mirrors that triple so the transitions are
-/// unit-testable without opening a window.
+/// `ever_focused`, `focus_paused`); this struct mirrors them so the
+/// transitions are unit-testable without opening a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowUiState {
     /// A cartridge is loaded and stepping real boot code.
@@ -1605,6 +1605,10 @@ pub struct WindowUiState {
     pub ever_focused: bool,
     /// Selected save-state slot (`0` = the historical default).
     pub savestate_slot: u8,
+    /// The current pause came from losing focus, so regaining focus resumes
+    /// it. A pause the player asked for (`P`, the options menu) clears this
+    /// and stays until the player lifts it.
+    pub focus_paused: bool,
 }
 
 impl WindowUiState {
@@ -1618,6 +1622,7 @@ impl WindowUiState {
             paused: false,
             ever_focused: false,
             savestate_slot: 0,
+            focus_paused: false,
         }
     }
 
@@ -1638,11 +1643,22 @@ impl WindowUiState {
     /// window has gained focus at least once — otherwise a window opened
     /// unfocused (macOS open-unfocused) would instantly read `[PAUSED]`
     /// and look dead. Respects the `pause_on_focus_loss` pref throughout.
+    ///
+    /// Regaining focus resumes a pause that focus loss started. Windows 11
+    /// opens the Snipping Tool overlay on Print Screen, which takes focus
+    /// away for a moment; without the resume the game stayed paused until
+    /// `P` was pressed, which a player on a gamepad cannot do (issue #8).
+    /// A pause that was already in force when focus went away is left alone.
     pub fn on_focus(&mut self, focused: bool, pause_on_focus_loss: bool) {
         if focused {
             self.ever_focused = true;
-        } else if pause_on_focus_loss && self.ever_focused {
+            if self.focus_paused {
+                self.paused = false;
+                self.focus_paused = false;
+            }
+        } else if pause_on_focus_loss && self.ever_focused && !self.paused {
             self.paused = true;
+            self.focus_paused = true;
         }
     }
 
@@ -1652,6 +1668,7 @@ impl WindowUiState {
     pub fn on_rom_loaded(&mut self) {
         self.has_rom = true;
         self.paused = false;
+        self.focus_paused = false;
     }
 
     /// Whether the shared-audio pause-mute must be engaged for this state.
@@ -1903,6 +1920,27 @@ impl Display {
         self.pack_note.as_deref()
     }
 
+    /// Observe each emulated frame even when a capture harness only paints
+    /// selected frames. This keeps action starts independent of screenshot cadence.
+    pub fn update_actor_animations(&mut self, game: &Game) {
+        let mut actors = [z2_render::ActorInput::default(); 2];
+        let mut count = 0;
+        for v in game.player_visuals().into_iter().flatten() {
+            actors[count] = z2_render::ActorInput {
+                id: v.id,
+                character: v.character,
+                clip: v.clip,
+                position: v.position,
+                flip_h: v.flip_h,
+                oam_mask: v.oam_mask,
+                priority_oam: v.priority_oam,
+            };
+            count += 1;
+        }
+        self.presenter
+            .set_actors(game.frame_count(), NTSC_HZ, &actors[..count]);
+    }
+
     /// Compose the game's last latched frame and return the RGBA bytes
     /// (`size().0 * size().1 * 4` of them).
     ///
@@ -1934,6 +1972,7 @@ impl Display {
                     camera_x: s.camera_x,
                 }));
         }
+        self.update_actor_animations(game);
         let record = game.frame_record().unwrap_or(&self.empty_record);
         if let Some(rec) = self.recorder.as_mut() {
             rec.observe(record);
@@ -2098,6 +2137,9 @@ pub struct NativeArgs {
     /// `--scale-mode fit|integer` (overrides the `scale_mode` config key).
     /// Display only.
     pub scale_mode: Option<ScaleMode>,
+    /// `--no-discord`: no Discord Rich Presence this run (config key
+    /// `discord_presence`).
+    pub no_discord: bool,
     /// `--seed TEXT`: randomizer seed (turns the randomizer on).
     pub seed: Option<String>,
     /// `--rando-flags STRING`: randomizer flag string (turns it on).
@@ -2175,7 +2217,7 @@ usage: z2-native [--rom PATH] [--movie M.fm2|.bk2] [--config PATH]
                  [--signal URL] [--net-mode rollback|lockstep] [--net-delay N]
                  [--ice SPEC] [--p2-pad INDEX] [--p2-follow N]
                  [--seed TEXT] [--rando-flags STRING] [--rando-spoiler PATH]
-                 [--sprite-ips PATH] [--no-traps]
+                 [--sprite-ips PATH] [--no-traps] [--no-discord]
                  [--enh-json JSON|@PATH] [--display-enh-json JSON|@PATH] [--headless ...]
   --rom PATH       Zelda II .nes ROM (else config rom_path / $Z2_ROM). Never stored.
   --movie PATH     .fm2/.bk2 demo playback (oracle-free: steps Game, no verify).
@@ -2238,6 +2280,8 @@ usage: z2-native [--rom PATH] [--movie M.fm2|.bk2] [--config PATH]
   --display-enh-json J
                    display-only enhancements (screen shake, flash colour, effects,
                    volumes, dev overlays) as JSON or @PATH. Config key display_enh.
+  --no-discord     do not show game status on your Discord profile (config key
+                   discord_presence).
   --headless ...   windowless CI surface (see --headless --help).
 keys P1: Z=A X=B Enter=Start RightShift=Select arrows=dpad
 keys P2: G=A F=B T=Start R=Select W/A/S/D=dpad (local co-op only; see keys_p2)
@@ -2387,6 +2431,7 @@ pub fn parse_native_args(argv: &[String]) -> Result<NativeArgs, String> {
                 out.scale = Some(n);
             }
             "--fullscreen" => out.fullscreen = true,
+            "--no-discord" => out.no_discord = true,
             "--scale-mode" => {
                 let raw = native_arg_value(&mut it, "--scale-mode")?;
                 out.scale_mode = Some(ScaleMode::parse(&raw).ok_or_else(|| {
@@ -2910,12 +2955,21 @@ fn run_event_loop(
         paused: bool,
         has_rom: bool,
         ever_focused: bool,
+        /// Mirrors [`WindowUiState::focus_paused`].
+        focus_paused: bool,
         fast_forward: bool,
         /// Selected save-state slot (digits pick, `F6` cycles; shown in title).
         savestate_slot: u8,
         frame_step: bool,
         /// Last observed `Game::exec_errors` (wedge guard in step_emulator).
         exec_errors_seen: u64,
+        /// Discord Rich Presence: the channel to its thread, the last value
+        /// sent, and the `frame_count / 60` it was checked at. `None` = off.
+        presence: Option<(
+            std::sync::mpsc::Sender<crate::presence::Presence>,
+            Option<crate::presence::Presence>,
+            u64,
+        )>,
         fps_acc: u32,
         fps_shown: f64,
         fps_last: Instant,
@@ -3294,11 +3348,13 @@ fn run_event_loop(
                          {remote:#018x}) - please report this with both peers' versions"
                     );
                     self.paused = true;
+                    self.focus_paused = false;
                     self.audio.set_paused(true);
                 }
                 Ev::Closed(reason) => {
                     eprintln!("netplay: session closed ({reason})");
                     self.paused = true;
+                    self.focus_paused = false;
                     self.audio.set_paused(true);
                 }
             }
@@ -3455,11 +3511,13 @@ fn run_event_loop(
                          {remote:#018x}) - please report this with both peers' versions"
                     );
                     self.paused = true;
+                    self.focus_paused = false;
                     self.audio.set_paused(true);
                 }
                 Ev::Disconnected { reason } => {
                     eprintln!("netplay: session closed ({reason})");
                     self.paused = true;
+                    self.focus_paused = false;
                     self.audio.set_paused(true);
                 }
             }
@@ -3560,6 +3618,7 @@ fn run_event_loop(
                     );
                 }
                 self.paused = true;
+                self.focus_paused = false;
                 self.audio.set_paused(true);
             }
             // Autosave SRAM every ~10 s of emulation (600 frames), never
@@ -3568,6 +3627,27 @@ fn run_event_loop(
             if frames != 0 && frames.is_multiple_of(600) && self.exec_errors_seen == 0 {
                 let name = self.sram_file();
                 let _ = save_sram_named(&mut self.emu.game, &self.data_dir, &name);
+            }
+        }
+
+        /// The window is visible again (unoccluded or focused): clear the
+        /// occluded flag, re-establish the surface if it was hidden or the
+        /// size changed, and request a redraw so the next present re-blits
+        /// the whole frame.
+        fn reshow_surface(&mut self) {
+            let was_occluded = self.occluded;
+            self.occluded = false;
+            if let (Some(p), Some(w)) = (self.pixels.as_mut(), self.window.as_ref()) {
+                let size = w.inner_size();
+                let (sw, sh) = clamp_surface_size(size.width, size.height);
+                if was_occluded || self.surface_size != (sw, sh) {
+                    if let Err(e) = p.resize_surface(sw, sh) {
+                        eprintln!("present reshow resize {sw}x{sh}: {e:?}");
+                    } else {
+                        self.surface_size = (sw, sh);
+                    }
+                }
+                w.request_redraw();
             }
         }
 
@@ -3811,6 +3891,7 @@ fn run_event_loop(
                 } else if paused != self.paused {
                     eprintln!("{}", if paused { "paused" } else { "resumed" });
                     self.paused = paused;
+                    self.focus_paused = false;
                     self.audio.set_paused(paused);
                     if !paused {
                         self.audio.clear();
@@ -4157,6 +4238,7 @@ fn run_event_loop(
                         paused: self.paused,
                         ever_focused: self.ever_focused,
                         savestate_slot: self.savestate_slot,
+                        focus_paused: self.focus_paused,
                     };
                     // Auto-pause is ignored during netplay: a paused peer
                     // stalls the other one, so an unfocused window keeps
@@ -4174,7 +4256,16 @@ fn run_event_loop(
                     ui.on_focus(focused, pause_pref);
                     self.paused = ui.paused;
                     self.ever_focused = ui.ever_focused;
+                    self.focus_paused = ui.focus_paused;
                     self.audio.set_paused(ui.audio_muted());
+                    if focused {
+                        // Print Screen on Windows 11 (Snipping Tool) can
+                        // report the window occluded without a matching
+                        // unocclude, which left the present path skipping
+                        // every frame. Focus means the window is visible, so
+                        // re-establish the surface and present again.
+                        self.reshow_surface();
+                    }
                     if !focused {
                         self.keyboard.clear();
                         self.fast_forward = false;
@@ -4221,10 +4312,12 @@ fn run_event_loop(
                                     paused: self.paused,
                                     ever_focused: self.ever_focused,
                                     savestate_slot: self.savestate_slot,
+                                    focus_paused: self.focus_paused,
                                 };
                                 ui.on_rom_loaded();
                                 self.has_rom = ui.has_rom;
                                 self.paused = ui.paused;
+                                self.focus_paused = ui.focus_paused;
                                 // Audio follows the pause flag exactly (see
                                 // `WindowUiState::audio_muted`): the swap
                                 // resumes stepping, so unmute — and drop the
@@ -4287,19 +4380,12 @@ fn run_event_loop(
                     }
                 }
                 WindowEvent::Occluded(occluded) => {
-                    self.occluded = occluded;
-                    if !occluded {
+                    if occluded {
+                        self.occluded = true;
+                    } else {
                         // Unocclude/unminimize: re-establish the surface
                         // before the next present so no stale frame survives.
-                        if let (Some(p), Some(w)) = (self.pixels.as_mut(), self.window.as_ref()) {
-                            let size = w.inner_size();
-                            let (sw, sh) = clamp_surface_size(size.width, size.height);
-                            if let Err(e) = p.resize_surface(sw, sh) {
-                                eprintln!("present unocclude resize {sw}x{sh}: {e:?}");
-                            } else {
-                                self.surface_size = (sw, sh);
-                            }
-                        }
+                        self.reshow_surface();
                     }
                 }
                 WindowEvent::ModifiersChanged(mods) => {
@@ -4361,6 +4447,7 @@ fn run_event_loop(
                                         self.refuse_during_netplay("pause");
                                     } else {
                                         self.paused = !self.paused;
+                                        self.focus_paused = false;
                                         // Pause-mute: freeze the meter/ring
                                         // with the flag; drop stale audio on
                                         // resume so no burst plays.
@@ -4556,6 +4643,19 @@ fn run_event_loop(
                 self.step_emulator(steps);
                 self.fps_acc += steps as u32;
             }
+            // Discord presence: one RAM read and compare per 60 frames.
+            if let Some((tx, last, checked)) = self.presence.as_mut() {
+                let bucket = self.emu.game.frame_count() / 60;
+                if bucket != *checked {
+                    *checked = bucket;
+                    let coop = self.emu.game.coop_status().is_some();
+                    let p = crate::presence::from_ram(self.emu.game.ram(), coop);
+                    if last.as_ref() != Some(&p) {
+                        let _ = tx.send(p.clone());
+                        *last = Some(p);
+                    }
+                }
+            }
             if let Some(w) = self.window.as_ref() {
                 w.request_redraw();
             }
@@ -4568,6 +4668,7 @@ fn run_event_loop(
     let window_scale = config.effective_window_scale();
     let config_scale_mode = config.effective_scale_mode();
     let start_fullscreen = config.fullscreen;
+    let discord_presence = config.discord_presence;
     crate::diag::breadcrumb("creating the event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
@@ -4721,10 +4822,16 @@ fn run_event_loop(
         paused: initial.paused,
         has_rom: initial.has_rom,
         ever_focused: false,
+        focus_paused: false,
         fast_forward: false,
         savestate_slot: 0,
         frame_step: false,
         exec_errors_seen: 0,
+        presence: if discord_presence && !args.no_discord {
+            crate::presence::start().map(|tx| (tx, None, u64::MAX))
+        } else {
+            None
+        },
         fps_acc: 0,
         fps_shown: 60.0,
         fps_last: Instant::now(),
@@ -5247,6 +5354,48 @@ mod tests {
             classify_dropped_file(Path::new("no-extension")),
             DroppedFileKind::Rom
         );
+    }
+
+    #[test]
+    fn focus_pause_resumes_when_focus_returns() {
+        // Issue #8: Print Screen on Windows 11 opens the Snipping Tool,
+        // which takes focus for a moment. The game must not stay paused
+        // afterwards, because a gamepad player has no `P` to resume with.
+        let mut ui = WindowUiState::new(true);
+        ui.on_focus(true, true);
+        ui.on_focus(false, true);
+        assert!(ui.paused && ui.focus_paused);
+        ui.on_focus(true, true);
+        assert!(!ui.paused, "regaining focus resumes a focus-loss pause");
+        assert!(!ui.focus_paused);
+
+        // A pause the player chose survives a focus round trip.
+        let mut ui = WindowUiState::new(true);
+        ui.on_focus(true, true);
+        ui.paused = true;
+        ui.on_focus(false, true);
+        assert!(
+            !ui.focus_paused,
+            "focus loss does not take over a manual pause"
+        );
+        ui.on_focus(true, true);
+        assert!(ui.paused, "manual pause stays after focus returns");
+
+        // Pausing by hand while unfocused (the loop clears the flag) also
+        // keeps the pause when focus comes back.
+        let mut ui = WindowUiState::new(true);
+        ui.on_focus(true, true);
+        ui.on_focus(false, true);
+        ui.focus_paused = false;
+        ui.on_focus(true, true);
+        assert!(ui.paused);
+
+        // A ROM load resumes and forgets the focus pause.
+        let mut ui = WindowUiState::new(true);
+        ui.on_focus(true, true);
+        ui.on_focus(false, true);
+        ui.on_rom_loaded();
+        assert!(!ui.paused && !ui.focus_paused);
     }
 
     #[test]

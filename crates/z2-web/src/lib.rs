@@ -2006,6 +2006,21 @@ impl WebEmu {
         // centre frame with backdrop margins and no HD substitutions.
         let empty = z2_ppu::FrameRecord::new();
         let record = game.frame_record().unwrap_or(&empty);
+        let mut actors = [z2_render::ActorInput::default(); 2];
+        let mut count = 0;
+        for v in game.player_visuals().into_iter().flatten() {
+            actors[count] = z2_render::ActorInput {
+                id: v.id,
+                character: v.character,
+                clip: v.clip,
+                position: v.position,
+                flip_h: v.flip_h,
+                oam_mask: v.oam_mask,
+                priority_oam: v.priority_oam,
+            };
+            count += 1;
+        }
+        p.set_actors(game.frame_count(), 60.0988, &actors[..count]);
         let out = p
             .present(game.frame_indexed(), record, &game.chr)
             .map_err(|e| e.to_string())?;

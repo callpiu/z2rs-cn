@@ -166,6 +166,7 @@ pub(crate) fn empty_manifest(name: &str, scale: u32) -> PackManifest {
         tiles: Vec::new(),
         sprite_alpha: None,
         layers: Vec::new(),
+        actor_clips: Vec::new(),
         groups: None,
     }
 }

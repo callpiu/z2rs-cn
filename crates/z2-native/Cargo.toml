@@ -16,8 +16,11 @@ path = "src/lib.rs"
 # C/asm via `cc`), so containers without a C toolchain should use
 # `--no-default-features` — everything except the online transport still works
 # (local co-op, widescreen, movies, headless).
-default = ["netplay"]
+default = ["netplay", "discord"]
 netplay = ["z2-net/matchbox"]
+# Discord Rich Presence over the local Discord client's IPC socket (pure Rust,
+# desktop only; a no-op on Android and with the feature off).
+discord = ["dep:discord-rich-presence"]
 
 [dependencies]
 z2-apu = { path = "../z2-apu" }
@@ -60,6 +63,7 @@ z2-enh-ui = { path = "../z2-enh-ui" }
 # covers every Xbox-family pad (and anything Steam Input presents as one). The
 # two backends are mutually exclusive; the feature only changes Windows.
 [target.'cfg(not(target_os = "android"))'.dependencies]
+discord-rich-presence = { version = "1.1", optional = true }
 gilrs = { version = "0.11", default-features = false, features = ["xinput"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -512,6 +512,30 @@ fn check(args: &[String]) -> i32 {
         pack.tile_count(),
         pack.variant_count()
     );
+    if !pack.actor_clips().is_empty() {
+        println!(
+            "  {} actor clip(s), {} animation frame(s)",
+            pack.actor_clips().len(),
+            pack.actor_clips()
+                .iter()
+                .map(|clip| clip.frames.len())
+                .sum::<usize>()
+        );
+        for clip in pack.actor_clips() {
+            println!(
+                "    {}/{}: {} frames at {:.4} FPS ({})",
+                clip.character,
+                clip.name,
+                clip.frames.len(),
+                clip.fps,
+                if clip.looped {
+                    "loop"
+                } else {
+                    "hold last frame"
+                }
+            );
+        }
+    }
     for page in 0..32u8 {
         let (d, v) = pack.page_counts(page);
         if d + v > 0 {

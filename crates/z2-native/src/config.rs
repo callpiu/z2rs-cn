@@ -388,6 +388,11 @@ pub struct NativeConfig {
     /// `fit`. Display only.
     #[serde(default = "default_scale_mode")]
     pub scale_mode: String,
+    /// Show what you are doing in Zelda II on your Discord profile (Rich
+    /// Presence, via the local Discord app; `--no-discord` turns it off for
+    /// one run). Needs the `discord` cargo feature. Default on.
+    #[serde(default = "default_true")]
+    pub discord_presence: bool,
     /// ZALiA-inspired gameplay enhancements (all off by default; see
     /// README.md). `--enh-json` overrides it; ignored for
     /// `--movie` playback (it would desync the movie). Changes gameplay, so
@@ -482,6 +487,7 @@ impl Default for NativeConfig {
             window_scale: None,
             fullscreen: false,
             scale_mode: default_scale_mode(),
+            discord_presence: true,
             enhancements: z2_core::enh::Enhancements::default(),
             display_enh: z2_core::enh::DisplayEnh::default(),
             gpu_backend: default_gpu_backend(),

@@ -462,6 +462,9 @@ const keys = new Set();
 addEventListener('keydown', (e) => {
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();
   keys.add(e.code);
+  // A key press is a user gesture, so a keyboard player gets sound without
+  // hunting for the button (the touch pad does the same on pointerup).
+  if (!actx && !$('audioBtn').disabled) $('audioBtn').click();
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
 // A key held while the window loses focus never delivers its keyup here

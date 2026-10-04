@@ -95,12 +95,15 @@ Besides `--rom`, `--movie` and `--config`:
 | `--rando-spoiler PATH` | with a randomized game, write a spoiler log |
 | `--sprite-ips PATH` | with a randomized game, apply your own Link sprite patch |
 | `--enh-json JSON` / `--display-enh-json JSON` | gameplay and display enhancements as JSON, inline or `@PATH` (see [enhancements.md](enhancements.md)) |
+| `--no-discord` | do not show game status (area, levels, lives) on your Discord profile (config key `discord_presence`) |
 
 `--help` lists all of these. An unknown flag is a usage error (exit 2).
 
 ## Config file
 
-The same settings live in `<data-dir>/z2-native.json`: `rom_path` (the remembered ROM), `window_scale`, `fullscreen`, `scale_mode`, `widescreen`, `widescreen_fill_left_clip`, `widescreen_fill_right_clip`, `widescreen_margin_sprites`, `widescreen_gameplay`, `hd_pack`, `hd_scale`, `hd_record`, `coop_local`, `keys_p2`, `gamepad`, `gamepad_p2`, `gamepad_p2_index`, `gamepads_enabled`, `allow_opposing_directions`, `gpu_backend`, `enhancements`, `display_enh`, and a `netplay` object (`mode`, `signal_url`, `input_delay`, `stall_timeout_ms`, `ice_url`, `ice_username`, `ice_credential`). Command-line flags win over the file. Older config files still load, because every newer key has a default.
+The same settings live in `<data-dir>/z2-native.json`: `rom_path` (the remembered ROM), `window_scale`, `fullscreen`, `scale_mode`, `widescreen`, `widescreen_fill_left_clip`, `widescreen_fill_right_clip`, `widescreen_margin_sprites`, `widescreen_gameplay`, `hd_pack`, `hd_scale`, `hd_record`, `coop_local`, `keys_p2`, `gamepad`, `gamepad_p2`, `gamepad_p2_index`, `gamepads_enabled`, `allow_opposing_directions`, `gpu_backend`, `discord_presence`, `enhancements`, `display_enh`, and a `netplay` object (`mode`, `signal_url`, `input_delay`, `stall_timeout_ms`, `ice_url`, `ice_username`, `ice_credential`). Command-line flags win over the file. Older config files still load, because every newer key has a default.
+
+When the Discord app is running on the same machine, the game shows your area, attack, magic and life levels and lives on your profile. Set `discord_presence` to `false` to keep the game off your profile. `--no-discord` turns it off for one run.
 
 The data directory is `$XDG_DATA_HOME/z2rs` when `XDG_DATA_HOME` is set. Otherwise it is `~/Library/Application Support/z2rs` on macOS, `%APPDATA%/z2rs` on Windows and `~/.local/share/z2rs` elsewhere. Save states, battery saves and the config file live there. The ROM is never stored there.
 

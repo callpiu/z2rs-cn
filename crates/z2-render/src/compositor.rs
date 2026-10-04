@@ -192,6 +192,7 @@ impl std::error::Error for ComposeError {}
 /// RGBA compositor at a fixed integer scale and margin width.
 #[derive(Debug, Clone)]
 pub struct Compositor {
+    pub(crate) actors: Vec<crate::actors::ActorInstance>,
     scale: u32,
     margin_tiles: u8,
     src_width: usize,
@@ -269,6 +270,7 @@ impl Compositor {
     /// [`ComposeError::BadScale`] outside 1..=8.
     pub fn with_margins(scale: u32, margin_tiles: u8) -> Result<Self, ComposeError> {
         let mut me = Self {
+            actors: Vec::new(),
             scale: 1,
             margin_tiles: 0,
             src_width: WIDTH,
@@ -415,6 +417,26 @@ impl Compositor {
             }
         }
         let layered = !self.layers.is_empty();
+        // Blink/visibility is still decided by the game's actual OAM. Hidden
+        // actors must not leave an animated ghost during damage or transitions.
+        if !self.actors.is_empty() {
+            let mut visible = 0u64;
+            for y in 0..HEIGHT {
+                for s in input.record.sprites_on(y) {
+                    visible |= 1u64 << s.oam_index;
+                }
+            }
+            self.actors.retain(|a| visible & a.oam_mask != 0);
+            for a in &mut self.actors {
+                a.behind = input
+                    .record
+                    .sprites
+                    .iter()
+                    .filter(|s| a.oam_mask & (1u64 << s.oam_index) != 0)
+                    .min_by_key(|s| s.oam_index)
+                    .is_some_and(|s| s.behind);
+            }
+        }
 
         for y in 0..HEIGHT {
             self.upscale_line(&input, y, out);
@@ -428,7 +450,7 @@ impl Compositor {
                 continue;
             }
             let hd_bg = self.paint_hd_background(rec, &input, pack, step, y, out);
-            if layered || pack.sprite_alpha_art() {
+            if layered || pack.sprite_alpha_art() || !self.actors.is_empty() {
                 self.resolve_columns(rec, &input, y);
                 self.prepare_layer_rows(pack, step, y);
                 let painted = layered && self.paint_layers(rec, &input, pack, step, y, out);
@@ -438,6 +460,82 @@ impl Compositor {
             }
         }
         Ok(())
+    }
+
+    fn actor_owns(&self, slot: u8) -> bool {
+        self.actors.iter().any(|a| a.oam_mask & (1u64 << slot) != 0)
+    }
+
+    fn actor_reaches(&self, actor: crate::actors::ActorInstance, pack: &HdPack, y: usize) -> bool {
+        let frame = &pack.actor_clips()[actor.clip].frames[actor.frame];
+        let top = (actor.position[1] * pack.scale() as f32 - frame.pivot[1]).round();
+        let row = y as f32 * pack.scale() as f32;
+        row + pack.scale() as f32 > top && row < top + frame.image.height as f32
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_actor_row(
+        &mut self,
+        actor: crate::actors::ActorInstance,
+        pack: &HdPack,
+        rec: &LineRecord,
+        input: &ComposeInput<'_>,
+        step: u32,
+        y: usize,
+        out: &mut [u8],
+    ) {
+        let frame = &pack.actor_clips()[actor.clip].frames[actor.frame];
+        let image = &frame.image;
+        let p = pack.scale() as f32;
+        let pivot_x = if actor.flip_h {
+            image.width as f32 - frame.pivot[0]
+        } else {
+            frame.pivot[0]
+        };
+        let left = (actor.position[0] * p - pivot_x).round() as i32;
+        let top = (actor.position[1] * p - frame.pivot[1]).round() as i32;
+        let n = self.scale as usize;
+        let margin = (self.src_width - WIDTH) / 2;
+        let start = (left.div_euclid(step as i32) + (margin * n) as i32).max(0) as usize;
+        let end = ((left + image.width as i32 + step as i32 - 1).div_euclid(step as i32)
+            + (margin * n) as i32)
+            .clamp(0, self.out_w as i32) as usize;
+        for fy in 0..n {
+            let iy = ((y * n + fy) * step as usize) as i32 - top;
+            if iy < 0 || iy >= image.height as i32 {
+                continue;
+            }
+            for dx in start..end {
+                let sx = dx / n;
+                let wx = sx as i32 - margin as i32;
+                if (0..8).contains(&wx) && rec.mask & PPUMASK_SHOW_LEFT_SPRITES == 0 {
+                    continue;
+                }
+                if Self::line_edge_fill(input, y).right && (248..256).contains(&wx) {
+                    continue;
+                }
+                let ix = (dx as i32 - (margin * n) as i32) * step as i32 - left;
+                if ix < 0 || ix >= image.width as i32 {
+                    continue;
+                }
+                let ix = if actor.flip_h {
+                    image.width as i32 - 1 - ix
+                } else {
+                    ix
+                };
+                let rgba = image.pixel(ix as u32, iy as u32);
+                let claim = (fy * self.src_width + sx) * n + dx % n;
+                if rgba[3] == 0 || self.claimed_out[claim] {
+                    continue;
+                }
+                self.claimed_out[claim] = true;
+                if actor.behind && self.col_opaque[sx] {
+                    continue;
+                }
+                let dst = ((y * n + fy) * self.out_w + dx) * 4;
+                out[dst..dst + 4].copy_from_slice(&rgba);
+            }
+        }
     }
 
     /// Nearest-upscale one indexed line into its `scale` output rows.
@@ -1082,7 +1180,9 @@ impl Compositor {
                 .flat_map(move |m| margin_sprite_rows(m, input.record, y))
         };
         let own = sprites.iter().any(|s| hd_cell(s, rec).is_some())
-            || margin_rows().any(|r| hd_cell(&r.sprite, rec).is_some());
+            || margin_rows().any(|r| hd_cell(&r.sprite, rec).is_some())
+            || self.actors.iter().any(|a| self.actor_reaches(*a, pack, y))
+            || sprites.iter().any(|s| self.actor_owns(s.oam_index));
         // A neighbouring line's sprite whose bleed reaches this line.
         let reaching = |d: usize, below: bool| {
             let ly = if below { y + d } else { y.wrapping_sub(d) };
@@ -1170,7 +1270,19 @@ impl Compositor {
         for c in self.claimed_out[..src_width * n * n].iter_mut() {
             *c = false;
         }
+        let mut actor_drawn = 0u32;
         for (s, left, window) in rows() {
+            for i in 0..self.actors.len() {
+                if actor_drawn & (1 << i) == 0
+                    && (self.actors[i].priority_oam <= s.oam_index || !window)
+                {
+                    self.draw_actor_row(self.actors[i], pack, rec, input, step, y, out);
+                    actor_drawn |= 1 << i;
+                }
+            }
+            if window && self.actor_owns(s.oam_index) {
+                continue;
+            }
             let s = &s;
             let hd = hd_cell(s, rec);
             let id = sprite_tile_id(s);
@@ -1227,6 +1339,11 @@ impl Compositor {
                 }
             }
         }
+        for i in 0..self.actors.len() {
+            if actor_drawn & (1 << i) == 0 {
+                self.draw_actor_row(self.actors[i], pack, rec, input, step, y, out);
+            }
+        }
         if !art {
             return;
         }
@@ -1244,6 +1361,9 @@ impl Compositor {
                     continue;
                 };
                 for s in input.record.sprites_on(ly) {
+                    if self.actor_owns(s.oam_index) {
+                        continue;
+                    }
                     let row_in_box = i32::from(s.row_in_sprite % 8);
                     if d > 0 && row_in_box != if below { 0 } else { 7 } {
                         continue;

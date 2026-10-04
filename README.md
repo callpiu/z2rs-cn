@@ -25,6 +25,8 @@ The launcher also sets the window size, fullscreen, widescreen (16:10, 16:9 or 2
 
 The game remembers the last ROM it loaded, so after the first run you can start `z2rs` directly and it boots straight into the game. Dragging a ROM onto the game window still works. `HOW-TO-PLAY.txt` in the archive lists the controls and where settings and saves are kept.
 
+While Discord is running, the desktop build shows where you are in the game (area, levels, lives) on your Discord profile. `--no-discord`, or `"discord_presence": false` in the config file, turns that off.
+
 For Android 8.0 and newer, the releases page also has `z2rs-<version>-android.apk`. Install it, pick your ROM in the app and press Play. It has an on-screen gamepad, works with Bluetooth and USB controllers, and can import an HD pack. Online co-op, the randomizer and the enhancements are not available on Android yet. [guide/android.md](guide/android.md) covers installing, the controls and the settings.
 
 Only one dump passes the check, identified by the hash of the ROM body with the 16-byte iNES header stripped: CRC32 `BA322865`, SHA1 `11333adb723a5975e0ecca3aee8f4747aa8d2d26` (No-Intro USA). The file is only ever read in place.

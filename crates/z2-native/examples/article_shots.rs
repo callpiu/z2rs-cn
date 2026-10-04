@@ -688,6 +688,10 @@ fn run() -> Result<(), String> {
             let mut owed: usize = 0;
             let mut owed_age: usize = 0;
             for i in 0..=shot.run {
+                let src = if shot.run == 0 { &a } else { &b };
+                for variant in std::iter::once(&main_variant).chain(shot.variants.iter()) {
+                    displays.get(variant)?.update_actor_animations(&src.game);
+                }
                 let mut found_now = false;
                 if let Some((kind, delay)) = &shot.find {
                     if i > 0 && found_at.len() < 4 && pending.is_none() {

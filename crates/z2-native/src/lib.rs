@@ -19,6 +19,7 @@
 //!   transport itself is behind the `netplay` cargo feature).
 //! * [`rando`] — randomizer seam (`--seed`, `--rando-flags`): the vanilla
 //!   body is randomized by `z2-rando` before every emulator build.
+//! * [`presence`] — Discord Rich Presence (behind the `discord` feature).
 
 pub mod app;
 pub mod audio;
@@ -35,4 +36,5 @@ pub mod headless;
 pub mod input;
 pub mod netplay;
 pub mod overlay;
+pub mod presence;
 pub mod rando;

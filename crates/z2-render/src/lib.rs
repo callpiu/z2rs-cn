@@ -33,6 +33,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod actors;
 pub mod chr;
 pub mod compositor;
 #[cfg(not(target_arch = "wasm32"))]
@@ -44,6 +45,7 @@ pub mod presenter;
 pub mod recorder;
 pub mod template;
 
+pub use actors::{ActorClipEntry, ActorFrameEntry, ActorInput};
 pub use chr::{paint_page_sheet, tile_subpixels, CHR_PAGES, CHR_PAGE_LEN, TILES_PER_PAGE};
 pub use compositor::{
     bg_colors, sprite_colors, ComposeError, ComposeInput, Compositor, IndexedView,

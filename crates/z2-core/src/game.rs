@@ -375,6 +375,7 @@ impl Game {
             coop: crate::coop::CoopState::default(),
             #[cfg(feature = "interp")]
             margin_sprites: crate::wide_sprites::MarginSpriteState::default(),
+            #[cfg(feature = "interp")]
             wide_game: crate::wide_gameplay::WideGameplayState::default(),
             #[cfg(feature = "interp")]
             enh: crate::enh::Enhancements::default(),

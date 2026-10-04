@@ -119,7 +119,7 @@ pub struct Model {
     pub scale_mode: ScaleMode,
     /// Fast-forward multiplier (`Tab` held).
     pub fast_forward_multiplier: u32,
-    /// Pause when the window loses focus.
+    /// Pause while the window is in the background (resumes on focus).
     pub pause_on_focus_loss: bool,
     /// Widescreen margin tiles per side (0 = off).
     pub wide_tiles: u8,
@@ -297,7 +297,7 @@ fn game_tab(ui: &mut egui::Ui, m: &mut Model, o: Opts) {
     });
     ui.checkbox(
         &mut m.pause_on_focus_loss,
-        "Pause when the window loses focus",
+        "Pause while the window is in the background",
     )
     .on_hover_text("Ignored during netplay, where a paused peer would stall the other.");
 }
