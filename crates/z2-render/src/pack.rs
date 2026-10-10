@@ -626,15 +626,34 @@ impl HdPack {
                 (s, b.as_slice())
             })
             .collect();
-        let manifest_path = norm
+        let manifests: Vec<&String> = norm
             .iter()
             .map(|(p, _)| p)
             .filter(|p| *p == PACK_MANIFEST || p.ends_with("/pack.json"))
-            .min_by_key(|p| (p.matches('/').count(), (*p).clone()))
+            .collect();
+        let depth = |p: &str| p.matches('/').count();
+        let manifest_path = *manifests
+            .iter()
+            .min_by_key(|p| (depth(p), (**p).clone()))
             .ok_or_else(|| PackError::MissingFile {
                 file: PACK_MANIFEST.to_string(),
                 reason: format!("no pack.json among the {} provided files", files.len()),
             })?;
+        // Two packs side by side (an old pack and its update, both picked
+        // through their parent folder): choosing one by name would silently
+        // show the other pack's art, so make the player pick one.
+        if let Some(other) = manifests
+            .iter()
+            .find(|p| **p != manifest_path && depth(p) == depth(manifest_path))
+        {
+            return Err(PackError::MissingFile {
+                file: PACK_MANIFEST.to_string(),
+                reason: format!(
+                    "the picked folder holds more than one pack (\"{manifest_path}\" and \
+                     \"{other}\"); pick the folder of the one pack to use"
+                ),
+            });
+        }
         let prefix = manifest_path[..manifest_path.len() - PACK_MANIFEST.len()].to_string();
         let map: BTreeMap<&str, &[u8]> = norm
             .iter()
@@ -1138,6 +1157,20 @@ impl HdPack {
             }
         }
         slot.default
+    }
+
+    /// The variant registered for exactly `colors`, ignoring the default.
+    #[inline]
+    #[must_use]
+    pub fn lookup_variant(&self, page: u8, tile: u8, colors: [u8; 3]) -> Option<CellRef> {
+        let slot = self
+            .index
+            .get(usize::from(page) * TILES_PER_PAGE + usize::from(tile))?;
+        let key = colors.map(|c| c & 0x3F);
+        slot.variants
+            .binary_search_by(|(c, _)| c.cmp(&key))
+            .ok()
+            .map(|i| slot.variants[i].1)
     }
 
     /// The palette-independent cell only.

@@ -11,8 +11,9 @@ use egui::{Color32, RichText};
 
 use crate::game::{self, GameExit, RunningGame};
 use crate::settings::{
-    build_args, format_command, scan_packs, validate, Multiplayer, NetMode, PackEntry, Settings,
-    Widescreen, DEFAULT_SIGNAL_URL, GAME_CONFIG_FILE_NAME, MAX_HD_SCALE, MAX_SCALE,
+    build_args, format_command, pack_folder_warning, scan_packs, validate, Multiplayer, NetMode,
+    PackEntry, Settings, Widescreen, DEFAULT_SIGNAL_URL, GAME_CONFIG_FILE_NAME, MAX_HD_SCALE,
+    MAX_SCALE,
 };
 
 /// Something the view wants the caller to do.
@@ -90,6 +91,9 @@ pub struct LauncherState {
     /// Open every enhancement group (the headless render test uses it so
     /// every control is drawn).
     pub(crate) enh_force_open: bool,
+    /// [`pack_folder_warning`] for the pack path it was computed for (read
+    /// again only when the path changes or the packs are rescanned).
+    pack_warning: Option<(String, Option<String>)>,
 }
 
 impl LauncherState {
@@ -114,6 +118,7 @@ impl LauncherState {
             last_flags: String::new(),
             rando_expand: false,
             enh_force_open: false,
+            pack_warning: None,
         };
         state.refresh_gpu_notice();
         state
@@ -128,6 +133,7 @@ impl LauncherState {
 
     /// Read `<data-dir>/packs/` again (after the player unzipped a pack).
     pub fn rescan_packs(&mut self) {
+        self.pack_warning = None;
         self.packs = scan_packs(&self.data_dir.join("packs"));
         let hd = self.settings.hd_pack.trim();
         self.hd_custom =
@@ -566,6 +572,16 @@ fn hd_section(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<
                     *action = Some(Action::BrowseHdPack);
                 }
             });
+        }
+        let path = state.settings.hd_pack.trim().to_string();
+        if state.pack_warning.as_ref().is_none_or(|(p, _)| *p != path) {
+            let warning = (!path.is_empty())
+                .then(|| pack_folder_warning(Path::new(&path)))
+                .flatten();
+            state.pack_warning = Some((path, warning));
+        }
+        if let Some((_, Some(warning))) = &state.pack_warning {
+            ui.label(RichText::new(warning).color(ui.visuals().warn_fg_color));
         }
         if !state.settings.hd_pack.trim().is_empty() {
             ui.horizontal(|ui| {

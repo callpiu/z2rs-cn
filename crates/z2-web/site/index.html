@@ -130,6 +130,10 @@
   .osd .btn { font-size: calc(var(--u) * 24); padding: calc(var(--u) * 8) calc(var(--u) * 22); }
   #drop.over .osd { background: radial-gradient(ellipse at center, rgba(60, 160, 120, 0.7), rgba(8, 40, 30, 0.95) 75%); }
   #drop.has-rom .osd { display: none; }
+  /* Why the last ROM or wasm load failed, on the screen itself (Status is far below). */
+  .osd .err { font-size: max(12px, calc(var(--u) * 20)); color: #ffd0c8; background: rgba(120, 10, 10, 0.75);
+    border: 1px solid #ff8a7a; padding: calc(var(--u) * 6) calc(var(--u) * 12); max-width: 36em; white-space: pre-wrap; }
+  .osd .err[hidden] { display: none; }
   @media (prefers-reduced-motion: reduce) { .osd::before, .osd .big { animation: none; } }
 
   /* Painted-over labels on the cabinet, relettered for this game. */
@@ -399,6 +403,7 @@
       <p>Drop your own Zelda&nbsp;II (USA) <code>.nes</code> on the screen</p>
       <label class="btn" for="romFile">Choose ROM file…</label>
       <p class="legal">No ROM is provided. It is checked in this tab and never leaves your browser.</p>
+      <p class="err" id="dropError" role="alert" hidden></p>
       <input type="file" id="romFile" class="vh" accept=".nes,.bin" />
     </div>
     <button type="button" id="soundHint" hidden>Click or press any key for sound</button>

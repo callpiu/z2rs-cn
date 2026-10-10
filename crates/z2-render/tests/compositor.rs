@@ -13,7 +13,10 @@ use z2_ppu::{
 };
 use z2_render::chr::paint_page_sheet;
 use z2_render::compositor::{bg_colors, sprite_colors, IndexedView};
-use z2_render::{encode_png_rgba, ComposeError, ComposeInput, Compositor, HdPack, MasterPalette};
+use z2_render::{
+    encode_png_rgba, text_box_span, ComposeError, ComposeInput, Compositor, HdPack, MasterPalette,
+    TEXT_BOX_BORDER_TILES,
+};
 
 const BG_PAGE: u8 = 1;
 const SPR_PAGE: u8 = 2;
@@ -1677,4 +1680,200 @@ fn margin_sprites_replay_over_hd_margins() {
     render_wide_indexed(&frame, &rec, &margins, &chr, &mut wide);
     let got = run(&bg_pack, &margins, &wide);
     assert_eq!(at(&got, -24), red);
+}
+
+/// `text_box_span`: first to last window-border column, two cells at least,
+/// only for fetched identities on a real page.
+#[test]
+fn text_box_span_runs_between_the_window_borders() {
+    let tile = |t: u8| BgTileId {
+        page: BG_PAGE,
+        tile: t,
+        fetched: true,
+        ..BgTileId::NONE
+    };
+    let line = |cells: &[(usize, u8)]| {
+        let mut ids = vec![tile(TILE_SOLID); WIDTH];
+        for &(cell, t) in cells {
+            ids[cell * 8..cell * 8 + 8].fill(tile(t));
+        }
+        ids
+    };
+    // A text row: `$CC` on both sides, glyphs and spaces between.
+    let row = line(&[(10, 0xCC), (12, 0xDA), (13, 0xF4), (20, 0xCC)]);
+    assert_eq!(text_box_span(&row), Some((80, 167)));
+    // Top edge: corners and the horizontal run.
+    let mut top = vec![(10, 0xCA), (20, 0xCA)];
+    top.extend((11..20).map(|c| (c, 0xCB)));
+    assert_eq!(text_box_span(&line(&top)), Some((80, 167)));
+    // No border, or one border cell alone: no window.
+    assert_eq!(text_box_span(&line(&[])), None);
+    assert_eq!(text_box_span(&line(&[(5, 0xCC)])), None);
+    // Unfetched or page-less slots do not count.
+    let mut blank = row.clone();
+    for id in &mut blank[160..168] {
+        id.fetched = false;
+    }
+    assert_eq!(text_box_span(&blank), None);
+    let mut no_page = row;
+    for id in &mut no_page[80..88] {
+        id.page = z2_ppu::record::NO_PAGE;
+    }
+    assert_eq!(text_box_span(&no_page), None);
+    assert_eq!(TEXT_BOX_BORDER_TILES, [0xCA, 0xCB, 0xCC]);
+}
+
+/// A town facade is a full-screen front layer painted for the house tiles.
+/// When the game writes a dialogue window over those tiles, the window must
+/// show as on the NES: no front layer between its borders, the layer
+/// unchanged everywhere else (bug: "the dialogues get blocked by the houses").
+#[test]
+fn text_windows_are_not_covered_by_front_layers() {
+    let chr = chr_image();
+    let mut p = scene(&chr);
+    // Window over cells 10..=20 x rows 6..=9: borders, interior spaces
+    // ($F4, a blank pattern here) and one opaque "glyph".
+    for row in 6..=9u8 {
+        for col in 10..=20u8 {
+            let edge_row = row == 6 || row == 9;
+            let edge_col = col == 10 || col == 20;
+            let t = match (edge_row, edge_col) {
+                (true, true) => 0xCA,
+                (true, false) => 0xCB,
+                (false, true) => 0xCC,
+                (false, false) => 0xF4,
+            };
+            p.set_tile(0, col, row, t);
+        }
+    }
+    p.set_tile(0, 12, 7, TILE_FLAT1);
+    // A lone border-numbered tile elsewhere is scene art, not a window.
+    p.set_tile(0, 5, 20, 0xCC);
+    let (frame, rec) = frame_and_record(&mut p);
+    let flat = upscale(frame.as_slice(), WIDTH, 1);
+    let pack = pack_from(
+        "\"layers\":[{\"file\":\"facade.png\",\"depth\":\"front\",\"scroll\":0}]",
+        vec![("facade.png", common::solid_png(256, 240, PINK))],
+    );
+    let got = compose_scene(&frame, &rec, &chr, &pack, None);
+    for (x, y, what) in [
+        (120, 60, "interior space"),
+        (100, 58, "glyph"),
+        (84, 50, "top-left corner"),
+        (164, 70, "right edge"),
+        (130, 76, "bottom edge"),
+    ] {
+        assert_ne!(px(&got, x, y), PINK, "{what}");
+        assert_eq!(
+            px(&got, x, y),
+            px(&flat, x, y),
+            "{what} shows the NES window"
+        );
+    }
+    for (x, y, what) in [
+        (40, 60, "left of the window, same line"),
+        (200, 60, "right of the window, same line"),
+        (120, 40, "above the window"),
+        (120, 90, "below the window"),
+        (44, 164, "the lone border tile"),
+    ] {
+        assert_eq!(px(&got, x, y), PINK, "{what} keeps the facade");
+    }
+}
+
+fn nes_rgba(c: u8) -> [u8; 4] {
+    let [r, g, b] = MasterPalette::NES.rgb(c);
+    [r, g, b, 255]
+}
+
+/// A one-sprite pack: `SPR_SOLID` art `sprite` registered for `colors` only.
+fn variant_only_pack(alpha: &str, colors: [u8; 3], sprite: Vec<u8>) -> HdPack {
+    let [a, b, c] = colors;
+    let body = format!(
+        "{alpha}\"sheets\":[{{\"file\":\"spr.png\"}}],\
+         \"tiles\":[{{\"page\":{SPR_PAGE},\"tile\":{SPR_SOLID},\"sheet\":\"spr.png\",\
+         \"x\":0,\"y\":0,\"colors\":[{a},{b},{c}]}}]"
+    );
+    pack_from(&body, vec![("spr.png", sprite)])
+}
+
+/// A stunned enemy flashes: the ROM (`LF1B5`) draws it with palette bits
+/// `($040E,x >> 1) & 3`, so most frames use a group its variant is not keyed
+/// on. The sprite keeps its HD art, recoloured to the colours it is drawn
+/// with, in both sprite passes (NES-silhouette and `sprite_alpha: art`).
+#[test]
+fn flashing_sprite_borrows_a_loaded_variant_recoloured() {
+    let chr = chr_image();
+    for alpha in ["", "\"sprite_alpha\":\"art\","] {
+        for flash_pal in 0..4u8 {
+            let mut p = scene(&chr);
+            // SPR_SOLID is sub-palette 2 in every pixel.
+            p.set_oam_entry(
+                0,
+                OamEntry {
+                    y: 99,
+                    tile: SPR_SOLID,
+                    attr: flash_pal,
+                    x: 100,
+                },
+            );
+            let (frame, rec) = frame_and_record(&mut p);
+            let line = rec.line(100);
+            // The enemy's own group is 2; its art is that group's colour 2
+            // with one brighter HD detail pixel at (3, 3).
+            let own = sprite_colors(line, 2);
+            let drawn = sprite_colors(line, flash_pal);
+            let shade = nes_rgba(own[1]);
+            let detail = shade.map(|v| v.saturating_add(9));
+            let sprite = png(
+                8,
+                8,
+                move |x, y| if (x, y) == (3, 3) { detail } else { shade },
+            );
+            let pack = variant_only_pack(alpha, own, sprite);
+            let got = compose_scene(&frame, &rec, &chr, &pack, None);
+            let want = nes_rgba(drawn[1]);
+            assert_eq!(
+                px(&got, 101, 100),
+                want,
+                "pal {flash_pal} {alpha}: base colour maps onto the drawn colour"
+            );
+            let shifted = |i: usize| {
+                (i32::from(detail[i]) - i32::from(shade[i]) + i32::from(want[i])).clamp(0, 255)
+                    as u8
+            };
+            assert_eq!(
+                px(&got, 103, 103),
+                [shifted(0), shifted(1), shifted(2), 255],
+                "pal {flash_pal} {alpha}: HD shading survives the recolour"
+            );
+        }
+    }
+}
+
+/// The fallback needs a loaded group's colours: a variant for colours no
+/// group holds still leaves the NES art.
+#[test]
+fn unloaded_variant_colours_still_fall_back_to_nes_art() {
+    let chr = chr_image();
+    let mut p = scene(&chr);
+    p.set_oam_entry(
+        0,
+        OamEntry {
+            y: 99,
+            tile: SPR_SOLID,
+            attr: 1,
+            x: 100,
+        },
+    );
+    let (frame, rec) = frame_and_record(&mut p);
+    let line = rec.line(100);
+    let loaded: Vec<[u8; 3]> = (0..4).map(|g| sprite_colors(line, g)).collect();
+    let stray = (0..64u8)
+        .map(|c| [c, c, c])
+        .find(|k| !loaded.contains(k))
+        .unwrap();
+    let pack = variant_only_pack("\"sprite_alpha\":\"art\",", stray, png(8, 8, |_, _| GREEN));
+    let got = compose_scene(&frame, &rec, &chr, &pack, None);
+    assert_eq!(px(&got, 101, 100), nes_rgba(sprite_colors(line, 1)[1]));
 }

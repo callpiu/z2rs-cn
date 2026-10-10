@@ -42,15 +42,21 @@ fn action(get: impl Fn(usize) -> u8) -> &'static str {
         9 => return "down_thrust_hold",
         _ => {}
     }
-    if get(0x0495) != 0 || get(0x0497) != 0 || get(0x0080) == 6 {
-        return "crouch_idle";
-    }
+    // Airborne first: the cartridge shows its duck frame `$80 = 6` while a
+    // jump rises (bank 0 `$956C`), which is the HD pack's `jump_rise`.
     if get(0x0479) != 0 {
         return match get(0x057D) as i8 {
             v if v < 0 => "jump_rise",
             0 => "jump_apex",
             _ => "fall",
         };
+    }
+    // Grounded duck: Down held (`$9419`) or the hard-landing timer `$0497`,
+    // both of which write `$80 = 6`. Not `$0495`: it latches the shield row
+    // `$17` at each stab (`$9606`), so a standing stab sets it and only a
+    // crouch stab clears it, and it stays set while Link stands and walks.
+    if get(0x0497) != 0 || get(0x0080) == 6 {
+        return "crouch_idle";
     }
     if get(0x0070) != 0 {
         "walk"
@@ -159,6 +165,27 @@ mod tests {
         assert_eq!(action(|a| ram[a]), "down_thrust_hold");
         ram[0x0013] = 8;
         assert_eq!(action(|a| ram[a]), "fairy_fly");
+        ram[0x0013] = 0;
+        // `$0495` left set by a standing stab: Link stands up again.
+        ram[0x0080] = 3;
+        ram[0x0495] = 1;
+        assert_eq!(action(|a| ram[a]), "idle");
+        ram[0x0070] = 0x10;
+        assert_eq!(action(|a| ram[a]), "walk");
+        ram[0x0080] = 6;
+        assert_eq!(action(|a| ram[a]), "crouch_idle");
+        // A rising jump also shows the duck frame `$80 = 6`.
+        ram[0x0479] = 2;
+        ram[0x057D] = 0xFC;
+        assert_eq!(action(|a| ram[a]), "jump_rise");
+        ram[0x0080] = 2;
+        ram[0x057D] = 3;
+        assert_eq!(action(|a| ram[a]), "fall");
+        // Hard landing: `$0497` holds the duck pose on the ground.
+        ram[0x0479] = 0;
+        ram[0x0497] = 8;
+        assert_eq!(action(|a| ram[a]), "crouch_idle");
+        ram[0x0013] = 8;
         ram[0x0494] = 1;
         assert_eq!(action(|a| ram[a]), "death");
     }

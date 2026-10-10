@@ -575,9 +575,12 @@ pub const MAX_HD_PACK_BYTES: usize = 96 * 1024 * 1024;
 /// Largest accepted single file in a staged HD-pack upload.
 pub const MAX_HD_FILE_BYTES: usize = 32 * 1024 * 1024;
 
-/// Largest accepted file count in a staged HD-pack upload (a Zelda II pack has
-/// one sheet per CHR page plus the manifest).
-pub const MAX_HD_PACK_FILES: usize = 256;
+/// Largest accepted file count in a staged HD-pack upload. Sheets alone fit in
+/// a few hundred files, but `actor_clips` frames are one PNG each: the packs
+/// with the animated Link hold about 2,600 files, and the old cap of 256
+/// rejected them, leaving the previously loaded pack (and its tile-by-tile
+/// Link) on screen. The byte caps still bound memory.
+pub const MAX_HD_PACK_FILES: usize = 16 * 1024;
 
 /// Pack summary for builds without the `hd` feature, so the JS status line and
 /// `hd_pack_info()` have the same shape either way.
@@ -595,7 +598,7 @@ const HD_UNSUPPORTED: &str = "this build has no HD-pack support (build z2-web wi
 fn hd_pack_json(pack: &z2_render::pack::HdPack) -> String {
     format!(
         "{{\"name\":\"{}\",\"author\":{},\"scale\":{},\"cellSize\":{},\
-         \"tiles\":{},\"variants\":{},\"sheets\":{}}}",
+         \"tiles\":{},\"variants\":{},\"sheets\":{},\"actorClips\":{}}}",
         json_escape(pack.name()),
         match pack.author() {
             Some(a) => format!("\"{}\"", json_escape(a)),
@@ -606,6 +609,7 @@ fn hd_pack_json(pack: &z2_render::pack::HdPack) -> String {
         pack.tile_count(),
         pack.variant_count(),
         pack.sheets().len(),
+        pack.actor_clips().len(),
     )
 }
 
@@ -3252,7 +3256,7 @@ mod tests {
         // "page" layout: 16x16 cells of `8 * scale` pixels each.
         let dim = 16 * 8 * scale;
         let mut rgba = vec![0u8; (dim * dim * 4) as usize];
-        for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
+        for (i, px) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             px.copy_from_slice(&[(i % 251) as u8, 0x40, 0x80, 0xFF]);
         }
         let png = z2_render::encode_png_rgba(dim, dim, &rgba, &[]).expect("encodes");
@@ -3319,6 +3323,44 @@ mod tests {
         assert_eq!(emu.frame_width(), 432);
         emu.render_frame().expect("renders without the pack");
         assert_eq!(emu.frame_len(), 432 * 240 * 4);
+    }
+
+    /// The packs with the animated Link hold one PNG per actor frame, about
+    /// 2,600 files in all. The picker hands every one of them over; the old
+    /// 256-file cap rejected the pick and left the previous pack on screen.
+    #[cfg(feature = "hd")]
+    #[test]
+    fn hd_pack_with_thousands_of_actor_frames_loads_from_a_picked_folder() {
+        let mut emu = booted();
+        let mut files = synthetic_pack_files(1, "new-pack/");
+        let png = z2_render::encode_png_rgba(2, 2, &[255; 16], &[]).expect("encodes");
+        let mut clips = Vec::new();
+        for clip in 0..40 {
+            let mut frames = Vec::new();
+            for f in 0..70 {
+                let rel = format!("actors/link/clip{clip:02}/{f:04}.png");
+                frames.push(format!("{{\"file\":\"{rel}\",\"pivot\":[1,1]}}"));
+                // Windows browsers and loose drops may report `\`.
+                files.push((format!("new-pack\\{}", rel.replace('/', "\\")), png.clone()));
+            }
+            clips.push(format!(
+                "{{\"character\":\"link\",\"name\":\"clip{clip:02}\",\"fps\":60,\"frames\":[{}]}}",
+                frames.join(",")
+            ));
+        }
+        let manifest = String::from_utf8(files[0].1.clone()).unwrap();
+        files[0].1 = format!(
+            "{},\"actor_clips\":[{}]}}",
+            manifest.trim_end().trim_end_matches('}'),
+            clips.join(",")
+        )
+        .into_bytes();
+        assert!(files.len() > 2_600);
+        stage(&mut emu, &files);
+        let info: serde_json::Value =
+            serde_json::from_str(&emu.hd_pack_commit().expect("pack loads")).expect("info JSON");
+        assert_eq!(info["actorClips"], 40);
+        assert_eq!(info["tiles"], 256);
     }
 
     /// A bad pack must be reported and change nothing: the tab keeps playing

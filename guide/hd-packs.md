@@ -11,7 +11,7 @@ cargo run --release -p z2-native -- --rom "$Z2_ROM" --hd-pack ~/z2-art/mypack --
 
 `--hd-record DIR` works the other way round. Play normally, and when you quit with `Esc` or by closing the window, z2rs writes a template pack that contains exactly the `(page, tile, palette)` combinations that session drew. That is a much smaller starting point than all 32 CHR pages. Only those two ways of quitting save the recording. A `kill` loses it.
 
-In the browser, the folder picker loads the same packs in a build that has the `hd` feature. Choose the directory that holds `pack.json`.
+In the browser, the folder picker loads the same packs in a build that has the `hd` feature. Choose the directory that holds `pack.json`. If the folder you pick holds two packs side by side, the browser refuses it and asks you to pick one, instead of choosing between them by name.
 
 Template sheets are rendered from your ROM, so they must stay outside this repository. The tooling refuses to write them inside a git work tree (see [LEGAL.md](LEGAL.md)). `cargo xtask hdpack --help` covers the rest of the workflow, and the module docs in `crates/z2-render/src/pack.rs` describe the `pack.json` format.
 
@@ -54,7 +54,7 @@ The targets run `tools/hd-sheets/specs.py` and the `article_shots` example with 
 
 A pack can set `"sprite_alpha": "art"` in `pack.json`. A replaced sprite then takes its outline from the art's own alpha instead of the original sprite's pixels, and a `tiles[]` entry can carry `bleed: [left, top, right, bottom]`, up to 8 NES pixels of art drawn around the 8x8 box. Sprites still stack in the order the game draws them, and a sprite behind the background still hides behind opaque background pixels. Packs made with `make hd-pack` use both.
 
-`layers[]` places whole images in one scene: a sky or far hills behind the background (`"depth": "back"`), or art over the background tiles (`"front"`). A layer can follow the camera at a fraction of its speed (`scroll`, a percentage), repeat horizontally, cover only chosen tiles (`over_tiles`), and apply to one scene through `when` (`world`, `region`, `scene`). `when.background_tile` (`x`, `y`, `page`, `tile`, and optionally `colors`) limits a layer to screens that show that background tile at that pixel of the NES picture, which keeps a title backdrop off the save menu and out of gameplay. Pick the anchor from captures of the screen you want and check that it is absent everywhere else. `paint_sheets.py cut --layer` adds them; its `--help` lists the options. Older builds ignore these keys and draw every sprite inside its original outline.
+`layers[]` places whole images in one scene: a sky or far hills behind the background (`"depth": "back"`), or art over the background tiles (`"front"`). A layer can follow the camera at a fraction of its speed (`scroll`, a percentage), repeat horizontally, cover only chosen tiles (`over_tiles`), and apply to one scene through `when` (`world`, `region`, `scene`). `when.background_tile` (`x`, `y`, `page`, `tile`, and optionally `colors`) limits a layer to screens that show that background tile at that pixel of the NES picture, which keeps a title backdrop off the save menu and out of gameplay. Pick the anchor from captures of the screen you want and check that it is absent everywhere else. `paint_sheets.py cut --layer` adds them; its `--help` lists the options. A front layer is never drawn inside the game's text windows (dialogue, signs and the pause menu), so a house layer cannot hide the text. Older builds ignore these keys and draw every sprite inside its original outline.
 
 ## Actor animations
 
@@ -85,7 +85,7 @@ A pack that uses `actor_clips` needs z2rs 0.5.1 or newer. Older builds ignore ke
 
 ## How packs work
 
-Three things identify every tile the PPU draws: the CHR page it came from, its tile index, and the three opaque colours of the palette it was drawn in. A pack maps those keys to cells in a PNG sheet. Where a tile has no cell, z2rs scales up the original art instead, so a half-finished pack plays fine and you can repaint the game a few tiles at a time.
+Three things identify every tile the PPU draws: the CHR page it came from, its tile index, and the three opaque colours of the palette it was drawn in. A pack maps those keys to cells in a PNG sheet. Where a tile has no cell, z2rs scales up the original art instead, so a half-finished pack plays fine and you can repaint the game a few tiles at a time. A sprite drawn in colours that have no cell borrows the cell made for another sprite palette on the same line and is recoloured to match. That keeps an enemy in HD while it flashes after a hit, because the game cycles it through all four sprite palettes.
 
 Replacement art never changes how the game behaves. The pack's alpha channel decides which HD pixels get painted, but the opacity of the original pixels still decides sprite priority, background priority and sprite-zero timing. The game logic keeps running on the ROM's own graphics while the screen shows yours.
 

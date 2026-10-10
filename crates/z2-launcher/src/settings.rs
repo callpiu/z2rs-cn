@@ -608,6 +608,40 @@ pub fn find_pack_root(dir: &Path) -> Option<PathBuf> {
     found.next().is_none().then_some(first)
 }
 
+/// Why the pack in `dir` would show Link from its sheets although the folder
+/// carries the animated Link frames, if it would.
+///
+/// Both cases come from unzipping a newer pack on top of an older one: the
+/// folder gains an `actors/` tree while its `pack.json` (the only file the
+/// game reads to find art) still lists no `actor_clips`; or the new pack
+/// lands one level down, beside the old `pack.json`, which then wins.
+pub fn pack_folder_warning(dir: &Path) -> Option<String> {
+    let manifest = dir.join("pack.json");
+    let text = std::fs::read_to_string(&manifest).ok()?;
+    let has_clips = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("actor_clips")?.as_array().map(|a| !a.is_empty()))
+        .unwrap_or(false);
+    if !has_clips && dir.join("actors").is_dir() {
+        return Some(
+            "This folder has an actors folder (animated Link frames), but its pack.json \
+             does not list them, so the game draws Link from the sheets. The pack.json is \
+             probably left over from an older pack: unzip the new pack into an empty folder."
+                .to_string(),
+        );
+    }
+    let nested = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.join("pack.json").is_file())?;
+    Some(format!(
+        "This folder holds a second pack in {}. The game uses the pack.json directly in \
+         the folder you picked, so pick that subfolder if it is the newer pack.",
+        nested.display()
+    ))
+}
+
 /// Quote one argument for display in a shell command line.
 pub fn quote_arg(a: &str) -> String {
     let plain = !a.is_empty()
@@ -862,6 +896,42 @@ mod tests {
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("pack.json"), "{}").unwrap();
         assert_eq!(find_pack_root(&outer), None);
+    }
+
+    #[test]
+    fn pack_folder_warning_names_a_stale_manifest_or_a_nested_newer_pack() {
+        let d = temp_dir("pack-warning");
+        let pack = d.join("z2rs-hd-pack-v0.1");
+        std::fs::create_dir_all(pack.join("sheets")).unwrap();
+        std::fs::write(pack.join("pack.json"), r#"{"version":1,"sheets":[]}"#).unwrap();
+        assert_eq!(pack_folder_warning(&pack), None, "an ordinary sheets pack");
+        assert_eq!(pack_folder_warning(&d.join("missing")), None);
+
+        // The new pack unzipped on top: actors/ arrived, pack.json did not.
+        let frames = pack.join("actors").join("link").join("attack");
+        std::fs::create_dir_all(&frames).unwrap();
+        std::fs::write(frames.join("0000.png"), b"png").unwrap();
+        let w = pack_folder_warning(&pack).expect("stale pack.json");
+        assert!(w.contains("does not list them"), "{w}");
+
+        // With the new manifest in place the pack is fine.
+        std::fs::write(
+            pack.join("pack.json"),
+            r#"{"version":1,"actor_clips":[{"character":"link","name":"attack",
+                "fps":60,"frames":[{"file":"actors/link/attack/0000.png","pivot":[0,0]}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(pack_folder_warning(&pack), None);
+
+        // The new pack landed one level down, beside the old pack.json.
+        std::fs::remove_dir_all(pack.join("actors")).unwrap();
+        std::fs::write(pack.join("pack.json"), r#"{"version":1}"#).unwrap();
+        let nested = pack.join("z2rs-hd-pack-v0.1.1-with-new-hd-link");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("pack.json"), "{}").unwrap();
+        let w = pack_folder_warning(&pack).expect("second pack inside");
+        assert!(w.contains("z2rs-hd-pack-v0.1.1-with-new-hd-link"), "{w}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

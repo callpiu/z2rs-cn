@@ -147,6 +147,30 @@ function audioStatus() {
   return `audio on (${audioQueuedMs()} ms buffered, ${audioReport.underruns} underruns)`;
 }
 
+// A failure the player has to see: Status sits far below the screen, so the
+// same text also goes on the "insert cartridge" screen (#dropError). Cleared
+// by the next load attempt.
+function showLoadError(msg) {
+  statusEl.textContent = msg;
+  const el = $('dropError');
+  if (el) { el.textContent = msg; el.hidden = false; }
+  console.error('[z2rs]', msg);
+}
+function clearLoadError() {
+  const el = $('dropError');
+  if (el) { el.textContent = ''; el.hidden = true; }
+}
+
+// WebEmu methods this page cannot run without. A host can serve a wasm
+// release older than this file (the Blob release is uploaded separately from
+// the page deploy); a missing method would otherwise throw a TypeError deep
+// inside the ROM load. Optional ones (`set_rando`, `rando_hash`) are checked
+// where they are used.
+const REQUIRED_EMU = ['load_rom', 'state', 'rom_loaded', 'version'];
+function missingEmuMethods(proto) {
+  return REQUIRED_EMU.filter((m) => typeof proto[m] !== 'function');
+}
+
 // --- wasm boot ------------------------------------------------------------
 // The glue module comes from CONFIG.wasm (a host pointing at an uploaded
 // release) or, by default, from ./pkg/ next to this file (the vanilla site,
@@ -161,11 +185,15 @@ async function boot() {
     }
     await pkg.default(CONFIG.wasm && CONFIG.wasm.wasm ? { module_or_path: CONFIG.wasm.wasm } : undefined);
     WebEmu = pkg.WebEmu;
+    if (typeof WebEmu !== 'function') throw new Error('the bundle has no WebEmu export');
+    const missing = missingEmuMethods(WebEmu.prototype);
+    if (missing.length) throw new Error(`the wasm release is older than this page (missing ${missing.join(', ')})`);
   } catch (e) {
-    statusEl.textContent = CONFIG.wasm
+    showLoadError((CONFIG.wasm
       ? `wasm release failed to load (${jsUrl}).\n${e}`
-      : `wasm bundle missing (./pkg/z2_web.js). Build it first — see site/README "Build".\n${e}`;
-    if (CONFIG.notes.length) statusEl.textContent += `\n${CONFIG.notes.join('\n')}`;
+      : `wasm bundle missing (./pkg/z2_web.js). Build it first — see site/README "Build".\n${e}`) +
+      (CONFIG.notes.length ? `\n${CONFIG.notes.join('\n')}` : ''));
+    WebEmu = null;
     return;
   }
   emu = new WebEmu();
@@ -180,6 +208,11 @@ async function boot() {
   syncHdPanel();
   statusEl.textContent += `\nz2-web ${emu.version()} ready — drop a Zelda II (USA) .nes file.`;
   if (CONFIG.notes.length) statusEl.textContent += `\n${CONFIG.notes.join('\n')}`;
+  if (typeof emu.set_rando !== 'function') {
+    // An older release: the game runs, the Randomizer tab cannot.
+    $('randoInfo').textContent = 'The randomizer is not in this wasm release; ROMs load unrandomized.';
+    statusEl.textContent += '\nwasm release has no randomizer (set_rando); ROMs load unrandomized.';
+  }
 }
 
 // `?widescreen=16:9` (or `?wide=`) and `?coop=1` so a QA run or a bookmark can
@@ -1070,25 +1103,38 @@ document.addEventListener('visibilitychange', () => {
 // One entry point for every source (drop, file picker, host download): the
 // wasm side hash-gates the bytes, and nothing here stores them anywhere.
 function loadRomBytes(buf) {
+  if (!emu) {
+    showLoadError(statusEl.textContent.startsWith('Loading')
+      ? 'The emulator is still loading — try the ROM again in a moment.'
+      : `The emulator did not start, so the ROM cannot run.\n${statusEl.textContent}`);
+    return;
+  }
+  clearLoadError();
   romLoadT0 = performance.now();
   firstFrameLogged = false;
-  // Randomizer: applied inside `load_rom`, after the hash gate.
-  try {
-    emu.set_rando($('randoSeed').value, $('randoFlags').value);
-  } catch (e) {
-    statusEl.textContent = `Randomizer flags rejected: ${e}`;
-    $('randoInfo').textContent = `Flags rejected: ${e}`;
-    return;
+  // Randomizer: applied inside `load_rom`, after the hash gate. A release
+  // without it (older than this page) still plays the original game.
+  const randoSupported = typeof emu.set_rando === 'function';
+  if (randoSupported) {
+    try {
+      emu.set_rando($('randoSeed').value, $('randoFlags').value);
+    } catch (e) {
+      showLoadError(`Randomizer flags rejected: ${e}`);
+      $('randoInfo').textContent = `Flags rejected: ${e}`;
+      return;
+    }
   }
   try {
     emu.load_rom(buf);
   } catch (e) {
-    statusEl.textContent = `ROM rejected: ${e}`;
+    const why = String(e);
+    showLoadError(why.startsWith('ROM rejected') ? why : `ROM rejected: ${why}`);
     return;
   }
   {
-    const hash = emu.rando_hash();
-    $('randoInfo').textContent = hash ? `Randomized game, hash code ${hash}` : 'Original game';
+    const hash = randoSupported && typeof emu.rando_hash === 'function' ? emu.rando_hash() : '';
+    $('randoInfo').textContent = hash ? `Randomized game, hash code ${hash}`
+      : randoSupported ? 'Original game' : 'Original game (this wasm release has no randomizer)';
   }
   // Re-apply the UI's feature state to the freshly built game. `load_rom`
   // constructs a new `Game` (and re-arms the render record from the settings
@@ -1128,7 +1174,13 @@ function loadRomBytes(buf) {
 }
 
 async function loadRomFile(file) {
-  loadRomBytes(new Uint8Array(await file.arrayBuffer()));
+  // Anything thrown here would otherwise be an unhandled rejection: the drop
+  // or picker would look like it did nothing.
+  try {
+    loadRomBytes(new Uint8Array(await file.arrayBuffer()));
+  } catch (e) {
+    showLoadError(`Loading ${file && file.name ? file.name : 'the ROM'} failed: ${e && e.message ? e.message : e}`);
+  }
 }
 
 // The TV screen (#drop) and anything marked data-rom-drop take a dropped ROM.
@@ -1416,7 +1468,8 @@ function syncHdPanel() {
   const over = eff !== want ? ` — the pack's ${eff}× wins over the ${want}× you picked` : '';
   hdSay(
     `pack "${info.name}"${info.author ? ` by ${info.author}` : ''}: ${info.scale}×, ` +
-    `${info.tiles} tiles, ${info.variants} variants, ${info.sheets} sheet(s) → ${size}${over}`,
+    `${info.tiles} tiles, ${info.variants} variants, ${info.sheets} sheet(s), ` +
+    `${info.actorClips ?? 0} actor clip(s) → ${size}${over}`,
   );
 }
 

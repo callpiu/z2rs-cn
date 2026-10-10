@@ -73,21 +73,17 @@ pub(crate) fn load_clips(
         }
         let mut frames = Vec::new();
         for f in &e.frames {
-            if f.file.is_empty()
-                || f.file.contains('\\')
-                || f.file.starts_with('/')
-                || f.file
-                    .split('/')
-                    .any(|s| s.is_empty() || s == "." || s == "..")
-                || f.file.contains(':')
-                || !f.pivot.iter().all(|x| x.is_finite() && x.abs() <= 8192.0)
-            {
-                return Err(format!(
-                    "{label}: invalid relative frame path or pivot: {}",
-                    f.file
-                ));
-            }
-            let bytes = read(&f.file).map_err(|err| format!("{label}: {}: {err}", f.file))?;
+            // Same rules as sheet and layer files: a manifest written on
+            // Windows (`actors\link\walk\0000.png`) or with `./` prefixes
+            // names the same file; absolute, drive-qualified and `..` paths
+            // are refused.
+            let path = crate::pack::normalize_rel_path(&f.file)
+                .filter(|p| !p.contains(':'))
+                .filter(|_| f.pivot.iter().all(|x| x.is_finite() && x.abs() <= 8192.0))
+                .ok_or_else(|| {
+                    format!("{label}: invalid relative frame path or pivot: {}", f.file)
+                })?;
+            let bytes = read(&path).map_err(|err| format!("{label}: {}: {err}", f.file))?;
             let mut image =
                 decode_png_rgba(&bytes).map_err(|err| format!("{label}: {}: {err}", f.file))?;
             decoded_bytes += image.rgba.len();

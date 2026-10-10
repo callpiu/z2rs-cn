@@ -1851,14 +1851,25 @@ impl Display {
                     pack.scale()
                 );
             }
+            // The actor clip count tells a support log whether the animated
+            // Link frames loaded or the pack's manifest predates them.
             pack_note = Some(format!(
-                "'{}' {}x, {} tiles ({} palette variants) from {}",
+                "'{}' {}x, {} tiles ({} palette variants), {} actor clips from {}",
                 pack.name(),
                 pack.scale(),
                 pack.tile_count(),
                 pack.variant_count(),
+                pack.actor_clips().len(),
                 dir.display()
             ));
+            if pack.actor_clips().is_empty() && dir.join("actors").is_dir() {
+                eprintln!(
+                    "HD pack: {} has an actors folder but its pack.json lists no actor_clips, \
+                     so Link is drawn from the sheets. The pack.json is probably from an older \
+                     pack: unzip the new pack into an empty folder.",
+                    dir.display()
+                );
+            }
             presenter
                 .set_pack(Some(pack))
                 .map_err(|e| format!("HD pack {}: {e}", dir.display()))?;

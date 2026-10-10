@@ -423,6 +423,31 @@ fn directory_prefixes_are_stripped() {
 }
 
 #[test]
+fn two_packs_picked_through_their_parent_are_refused_not_chosen_by_name() {
+    // An old pack and its update side by side. Picking by name used to load
+    // whichever sorted first ("v0.1" before "v0.1.1"), i.e. the older art.
+    let json = MINIMAL.as_bytes().to_vec();
+    for sep in ["/", "\\"] {
+        let list = vec![
+            (format!("packs{sep}pack-v0.1{sep}pack.json"), json.clone()),
+            (
+                format!("packs{sep}pack-v0.1{sep}sheets{sep}p5.png"),
+                one_tile_sheet(0x42, RED),
+            ),
+            (format!("packs{sep}pack-v0.1.1{sep}pack.json"), json.clone()),
+            (
+                format!("packs{sep}pack-v0.1.1{sep}sheets{sep}p5.png"),
+                one_tile_sheet(0x42, RED),
+            ),
+        ];
+        let e = HdPack::from_files(&list).unwrap_err();
+        assert!(matches!(e, PackError::MissingFile { .. }), "{e}");
+        assert!(e.to_string().contains("more than one pack"), "{e}");
+        assert!(e.to_string().contains("pack-v0.1.1/pack.json"), "{e}");
+    }
+}
+
+#[test]
 fn scale_two_cells() {
     let json = MINIMAL.replace("\"scale\":1", "\"scale\":2");
     let sheet = page_sheet_png(2, |t, x, _| {

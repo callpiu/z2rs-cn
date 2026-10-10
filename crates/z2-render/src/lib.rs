@@ -48,7 +48,8 @@ pub mod template;
 pub use actors::{ActorClipEntry, ActorFrameEntry, ActorInput};
 pub use chr::{paint_page_sheet, tile_subpixels, CHR_PAGES, CHR_PAGE_LEN, TILES_PER_PAGE};
 pub use compositor::{
-    bg_colors, sprite_colors, ComposeError, ComposeInput, Compositor, IndexedView,
+    bg_colors, sprite_art, sprite_colors, text_box_span, ComposeError, ComposeInput, Compositor,
+    IndexedView, SpriteArt, SpriteTint, TEXT_BOX_BORDER_TILES,
 };
 pub use pack::{
     BackgroundTileSignature, CellPixels, CellRef, HdPack, Layer, LayerDepth, LayerEntry, LayerWhen,

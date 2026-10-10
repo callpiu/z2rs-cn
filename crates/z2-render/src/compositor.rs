@@ -26,7 +26,10 @@
 //!   transparent (silhouette extension is not a v1 feature).
 //! * The variant key for a tile is the three opaque NES colour indices of its
 //!   palette group on that line: `palette_entry(pal * 4 + 1..=3)` for
-//!   background, `0x10 + pal * 4 + 1..=3` for sprites.
+//!   background, `0x10 + pal * 4 + 1..=3` for sprites. A sprite that misses
+//!   (no variant, no default) borrows the variant of another sprite group
+//!   loaded on the line, recoloured to its own colours ([`sprite_art`]), so
+//!   enemies flashing after a hit keep their HD art.
 //! * Slot geometry follows [`z2_ppu::wide`]: fetch slot `k` covers window
 //!   pixels `[8k - fine_x, 8k - fine_x + 8)`. Window pixels `0..256` come
 //!   from `record.tiles[k]` (outside a repainted edge strip); margins own only
@@ -79,6 +82,13 @@
 //! Split lines have no usable tile identities, so there a back layer shows
 //! where the indexed pixel equals the line's backdrop and front layers are
 //! skipped. A pack without these keys composes exactly as before.
+//!
+//! The game draws its dialogue, sign and pause windows straight into the
+//! nametable, over whatever tiles the scene had there. A front layer is
+//! painted for the scene's own tiles (a town facade over the house tiles),
+//! so on a line that crosses one of those windows no front layer is drawn
+//! between the window's borders ([`text_box_span`]); the window then shows
+//! as it does on the NES, over the facade instead of under it.
 
 use z2_ppu::record::{BgTileId, FrameRecord, LineRecord, NO_PAGE, RECORD_TILES_PER_LINE};
 use z2_ppu::wide::{
@@ -227,6 +237,34 @@ pub struct Compositor {
     /// was last called for.
     line_back: bool,
     line_front: bool,
+    /// Source columns `first..=last` of the line `resolve_columns` was last
+    /// called for that a game text window occupies ([`text_box_span`]):
+    /// front layers are not drawn there.
+    text_box: Option<(usize, usize)>,
+}
+
+/// Nametable tiles of the game's window frame (`bank3_Tables_for_dialog_box_rows`,
+/// `$B407`): `$CA` corners, `$CB` the horizontal edges, `$CC` the vertical
+/// edges. The dialogue, sign and pause windows all use them, and the font
+/// sits beside them in every background CHR bank, so the numbers hold on any
+/// page.
+pub const TEXT_BOX_BORDER_TILES: [u8; 3] = [0xCA, 0xCB, 0xCC];
+
+/// Columns `first..=last` of one line's background identities (`ids[x]` is
+/// the tile under pixel column `x`) that a game text window covers: from the
+/// first window-border column to the last, when at least two border cells
+/// sit on the line (both sides of the window, or a top or bottom edge). A
+/// front layer must not be drawn there: the game wrote the window over the
+/// scene's tiles, and the layer was painted for those scene tiles.
+#[must_use]
+pub fn text_box_span(ids: &[BgTileId]) -> Option<(usize, usize)> {
+    let border = |id: &BgTileId| {
+        id.fetched && id.page != NO_PAGE && TEXT_BOX_BORDER_TILES.contains(&id.tile)
+    };
+    let first = ids.iter().position(border)?;
+    let last = ids.iter().rposition(border)?;
+    // Two cells at least: one 8-px border cell alone is not a window.
+    (last >= first + 8).then_some((first, last))
 }
 
 /// `layer_rows` entry for "this layer does not reach that output row".
@@ -289,6 +327,7 @@ impl Compositor {
             front_idx: Vec::with_capacity(MAX_ACTIVE_LAYERS),
             line_back: false,
             line_front: false,
+            text_box: None,
         };
         me.reconfigure(scale, margin_tiles)?;
         Ok(me)
@@ -752,11 +791,7 @@ impl Compositor {
         // put the mask (or anything else) back over those columns. Same gate
         // as `z2_ppu::wide::render_wide_indexed`, via the same helper.
         let fill = Self::line_edge_fill(input, y);
-        let hd_of = |s: &SpriteRef| {
-            (s.page != NO_PAGE)
-                .then(|| pack.lookup(s.page, s.tile, sprite_colors(rec, s.pal)))
-                .flatten()
-        };
+        let hd_of = |s: &SpriteRef| sprite_art(pack, rec, input.palette, s);
         let any_hd_sprite = sprites.iter().any(|s| hd_of(s).is_some())
             || margin_rows().any(|r| hd_of(&r.sprite).is_some());
         if !hd_bg && !any_hd_sprite {
@@ -822,9 +857,9 @@ impl Compositor {
                         );
                         self.fill_block(sx, y, &rgba, out);
                     }
-                    Some(cell) => {
+                    Some(art) => {
                         let bg = input.palette.rgba(bg_index);
-                        self.draw_hd_sprite_pixel(pack, cell, &s, col, step, sx, y, &bg, out);
+                        self.draw_hd_sprite_pixel(pack, art, &s, col, step, sx, y, &bg, out);
                     }
                 }
             }
@@ -837,7 +872,7 @@ impl Compositor {
     fn draw_hd_sprite_pixel(
         &self,
         pack: &HdPack,
-        cell: CellRef,
+        art: SpriteArt,
         s: &SpriteRef,
         col: usize,
         step: u32,
@@ -847,7 +882,7 @@ impl Compositor {
         out: &mut [u8],
     ) {
         let n = self.scale as usize;
-        let cellpx = pack.cell_pixels(cell);
+        let cellpx = pack.cell_pixels(art.cell);
         let ps = pack.scale();
         for fy in 0..n {
             let sub_row = fy as u32 * step;
@@ -861,12 +896,9 @@ impl Compositor {
                 let sidx = ((col as u32 * ps + mirrored) as usize) * 4;
                 let dst = (oy * self.out_w + sx * n + fx) * 4;
                 if row[sidx + 3] != 0 {
-                    out[dst..dst + 4].copy_from_slice(&[
-                        row[sidx],
-                        row[sidx + 1],
-                        row[sidx + 2],
-                        0xFF,
-                    ]);
+                    let px = [row[sidx], row[sidx + 1], row[sidx + 2], 0xFF];
+                    let px = art.tint.map_or(px, |t| t.apply(px));
+                    out[dst..dst + 4].copy_from_slice(&px);
                 } else {
                     // Hole in HD sprite art shows the background.
                     out[dst..dst + 4].copy_from_slice(bg);
@@ -940,6 +972,7 @@ impl Compositor {
             self.col_opaque[sx] =
                 usable && chr_sub(input.chr_rom, id, sub_x).is_some_and(|v| v != 0);
         }
+        self.text_box = text_box_span(&self.col_id[..self.src_width]);
     }
 
     /// Find each layer's source row for every output row of line `y`, once
@@ -1035,8 +1068,13 @@ impl Compositor {
         let margin_px = (self.src_width.saturating_sub(WIDTH) / 2) as i32;
         let id = self.col_id[sx];
         let hwx = (sx as i32 - margin_px) * ps as i32 + (fx * step) as i32;
-        if let Some(px) = self.sample_layers(pack, LayerDepth::Front, id, hwx, fy as usize) {
-            return [px[0], px[1], px[2], 0xFF];
+        let in_text_box = self
+            .text_box
+            .is_some_and(|(first, last)| (first..=last).contains(&sx));
+        if !in_text_box {
+            if let Some(px) = self.sample_layers(pack, LayerDepth::Front, id, hwx, fy as usize) {
+                return [px[0], px[1], px[2], 0xFF];
+            }
         }
         let mut transparent = !self.col_opaque[sx];
         if let Some(cell) = cell {
@@ -1168,11 +1206,7 @@ impl Compositor {
             0
         };
         let sprites = input.record.sprites_on(y);
-        let hd_cell = |s: &SpriteRef, line: &LineRecord| {
-            (s.page != NO_PAGE)
-                .then(|| pack.lookup(s.page, s.tile, sprite_colors(line, s.pal)))
-                .flatten()
-        };
+        let hd_cell = |s: &SpriteRef, line: &LineRecord| sprite_art(pack, line, input.palette, s);
         let margin_rows = || {
             input
                 .margins
@@ -1197,8 +1231,8 @@ impl Compositor {
                 let edge_row = if below { 0 } else { 7 };
                 neighbour |= input.record.sprites_on(ly).iter().any(|s| {
                     s.row_in_sprite % 8 == edge_row
-                        && hd_cell(s, line).is_some_and(|c| {
-                            let [_, t, _, b] = c.bleed;
+                        && hd_cell(s, line).is_some_and(|a| {
+                            let [_, t, _, b] = a.cell.bleed;
                             let (top, bottom) = if s.flip_v { (b, t) } else { (t, b) };
                             usize::from(if below { top } else { bottom }) >= d
                         })
@@ -1306,7 +1340,7 @@ impl Compositor {
                 let nes_rgba = input
                     .palette
                     .rgba(rec.palette_entry(0x10 + usize::from(s.pal & 3) * 4 + usize::from(sub)));
-                let cellpx = hd.map(|c| pack.cell_pixels(c));
+                let cellpx = hd.map(|a| (pack.cell_pixels(a.cell), a.tint));
                 // Without art alpha the NES pixel claims its whole block.
                 let block_claim = !(art && hd.is_some());
                 for fy in 0..n {
@@ -1317,7 +1351,7 @@ impl Compositor {
                         }
                         let rgba = match &cellpx {
                             None => Some(nes_rgba),
-                            Some(cp) => {
+                            Some((cp, tint)) => {
                                 let sub_col = fx as u32 * step;
                                 let sub_row = fy as u32 * step;
                                 let hx = col as u32 * ps
@@ -1325,7 +1359,10 @@ impl Compositor {
                                 let hy = u32::from(s.fine_row & 7) * ps
                                     + if s.flip_v { ps - 1 - sub_row } else { sub_row };
                                 let px = cp.pixel(hx, hy);
-                                (px[3] != 0).then_some([px[0], px[1], px[2], 0xFF])
+                                (px[3] != 0).then(|| {
+                                    let px = [px[0], px[1], px[2], 0xFF];
+                                    tint.map_or(px, |t| t.apply(px))
+                                })
                             }
                         };
                         if block_claim || rgba.is_some() {
@@ -1368,7 +1405,7 @@ impl Compositor {
                     if d > 0 && row_in_box != if below { 0 } else { 7 } {
                         continue;
                     }
-                    let Some(cell) = hd_cell(s, line) else {
+                    let Some(SpriteArt { cell, tint }) = hd_cell(s, line) else {
                         continue;
                     };
                     if cell.bleed == [0; 4] {
@@ -1416,7 +1453,9 @@ impl Compositor {
                                 self.claimed_out[claim] = true;
                                 let dst =
                                     ((y * n + fy) * self.out_w + (x + margin_px) * n + fx) * 4;
-                                out[dst..dst + 4].copy_from_slice(&[px[0], px[1], px[2], 0xFF]);
+                                let px = [px[0], px[1], px[2], 0xFF];
+                                let px = tint.map_or(px, |t| t.apply(px));
+                                out[dst..dst + 4].copy_from_slice(&px);
                             }
                         }
                     }
@@ -1470,4 +1509,92 @@ pub fn sprite_colors(rec: &LineRecord, pal: u8) -> [u8; 3] {
         rec.palette_entry(base + 2),
         rec.palette_entry(base + 3),
     ]
+}
+
+/// HD art for one sprite row: the cell, plus a recolour when the cell was
+/// borrowed from another palette group ([`sprite_art`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpriteArt {
+    pub cell: CellRef,
+    pub tint: Option<SpriteTint>,
+}
+
+/// Palette swap of HD art: each pixel takes the shift from its nearest base
+/// colour to the matching colour of the group the sprite is drawn with, so
+/// the base variant's own colours land exactly on the drawn colours and the
+/// HD shading in between is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpriteTint {
+    base: [[u8; 3]; 3],
+    shift: [[i16; 3]; 3],
+}
+
+impl SpriteTint {
+    /// Recolour `base` (the borrowed variant's colours) to `drawn`.
+    #[must_use]
+    pub fn new(palette: &MasterPalette, base: [u8; 3], drawn: [u8; 3]) -> Self {
+        let base = base.map(|c| palette.rgb(c));
+        let drawn = drawn.map(|c| palette.rgb(c));
+        let shift = core::array::from_fn(|k| {
+            core::array::from_fn(|i| i16::from(drawn[k][i]) - i16::from(base[k][i]))
+        });
+        Self { base, shift }
+    }
+
+    /// `px` (opaque RGBA) recoloured.
+    #[must_use]
+    pub fn apply(&self, px: [u8; 4]) -> [u8; 4] {
+        let dist = |b: &[u8; 3]| -> i32 {
+            (0..3)
+                .map(|i| {
+                    let d = i32::from(px[i]) - i32::from(b[i]);
+                    d * d
+                })
+                .sum()
+        };
+        let mut k = 0;
+        for j in 1..3 {
+            if dist(&self.base[j]) < dist(&self.base[k]) {
+                k = j;
+            }
+        }
+        let ch = |i: usize| (i16::from(px[i]) + self.shift[k][i]).clamp(0, 255) as u8;
+        [ch(0), ch(1), ch(2), px[3]]
+    }
+}
+
+/// Resolve HD art for a recorded sprite row.
+///
+/// [`HdPack::lookup`] first (exact variant, then the default). When that
+/// misses, the tile is tried with the colours of the other three sprite
+/// groups loaded on the line, and a hit is drawn recoloured to the sprite's
+/// own colours ([`SpriteTint`]).
+///
+/// This is what keeps enemies in HD while they flash after a hit: the ROM
+/// (`LF1B5`, bank 7) replaces a stunned enemy's palette bits with
+/// `($040E,x >> 1) & 3`, cycling the sprite through all four groups every
+/// two frames, so three frames in four carry colours its variant was not
+/// registered for. Its own colours stay loaded in one of the other groups.
+#[must_use]
+pub fn sprite_art(
+    pack: &HdPack,
+    rec: &LineRecord,
+    palette: &MasterPalette,
+    s: &SpriteRef,
+) -> Option<SpriteArt> {
+    if s.page == NO_PAGE {
+        return None;
+    }
+    let drawn = sprite_colors(rec, s.pal);
+    if let Some(cell) = pack.lookup(s.page, s.tile, drawn) {
+        return Some(SpriteArt { cell, tint: None });
+    }
+    (1..4u8).find_map(|d| {
+        let base = sprite_colors(rec, (s.pal + d) & 3);
+        pack.lookup_variant(s.page, s.tile, base)
+            .map(|cell| SpriteArt {
+                cell,
+                tint: (base != drawn).then(|| SpriteTint::new(palette, base, drawn)),
+            })
+    })
 }
