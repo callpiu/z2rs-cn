@@ -1034,11 +1034,56 @@ pub fn emu_from_rom_file_with(
     feats: Features,
 ) -> Result<(Emu, Vec<u8>), String> {
     let file = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    // A translated (MMC5) image can't go through the vanilla pipeline: the
+    // trap table is keyed by original-ROM addresses and the CHR length is
+    // pinned at 128 KiB. Run it on the plain interpreter instead.
+    if ines_is_mmc5(&file) {
+        let emu = emu_from_generic_ines(&file, audio_rate)?;
+        let body = z2_assets::rom::strip_ines_header(&file).to_vec();
+        return Ok((emu, body));
+    }
     let body = z2_assets::rom::strip_ines_header(&file);
     // Copy out of the borrowed file buffer (verify + build own the bytes).
     let owned = body.to_vec();
     let emu = emu_from_rom_body_with(&owned, audio_rate, feats)?;
     Ok((emu, owned))
+}
+
+/// Build an emulator from an arbitrary iNES image, with **no** traps and
+/// **no** patches.
+///
+/// # Why a separate path
+///
+/// The native path (`emu_from_trusted_body_with`) is built around the exact
+/// original cartridge: it pins CHR at 128 KiB, rebuilds the iNES header from
+/// a bare body, installs the bank-7 trap table (Rust reimplementations keyed
+/// by *original* addresses) and then applies wide-gameplay / enhancement
+/// patches at original-ROM offsets.
+///
+/// A translated ROM (mapper 5, 256 KiB PRG + 512 KiB CHR) matches none of
+/// that: 51% of its fixed bank differs from the original, so every trap would
+/// run the wrong code. This entry point instead hands the whole image to the
+/// 6502 interpreter and lets the ROM run itself.
+///
+/// Slower than the trap path, but correct for any image.
+pub fn emu_from_generic_ines(bytes: &[u8], audio_rate: u32) -> Result<Emu, String> {
+    let mut game = Game::from_ines(bytes).map_err(|e| format!("load ROM: {e}"))?;
+    game.reset();
+    Ok(Emu {
+        game,
+        apu: z2_apu::Apu::new(crate::audio::clamp_rate(audio_rate)),
+        trapset_id: 0,
+        trapset_base: 0,
+        rom: RomIdentity::default(),
+    })
+}
+
+/// True when `bytes` is an iNES image whose header selects MMC5 (mapper 5).
+#[must_use]
+pub fn ines_is_mmc5(bytes: &[u8]) -> bool {
+    bytes.len() >= 16
+        && bytes[0..4] == *b"NES\x1A"
+        && ((bytes[7] & 0xF0) | (bytes[6] >> 4)) == 5
 }
 
 /// Step `inputs.len()` logic frames, pushing one APU frame per step into

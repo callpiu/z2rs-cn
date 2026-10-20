@@ -123,6 +123,11 @@ pub mod player_visual;
 /// Gated behind `interp` with the interpreter (implements `cpu::PpuBus`).
 #[cfg(feature = "interp")]
 pub mod ppu_bind;
+/// MMC5 (mapper 5) banking — required by the Chinese-translated ROM.
+///
+/// Upstream z2rs only speaks MMC1. The translation is mapper 5 with
+/// 256 KiB PRG + 512 KiB CHR, so running it at all needs this mapper.
+pub mod mmc5;
 pub mod ram;
 /// Save-slot RAM logic: new-game init, presence, name entry, lives/deaths,
 /// continue/save/retry.

@@ -564,15 +564,23 @@ pub(crate) fn bus_read(game: &mut Game, addr: u16) -> u8 {
         // $4017 read = controller 2 (the APU frame counter is write-only).
         0x4017 => game.poll_pad2(),
         0x4018..=0x401F => 0, // APU test-mode / open bus stub.
-        0x4020..=0x5FFF => 0, // Expansion / open bus stub.
+        0x4020..=0x5FFF => match game.mapper {
+            // MMC5 exposes its register file and ExRAM here; everything else
+            // in the range is open bus.
+            crate::game::MapperKind::Mmc5 => game.mmc5.read(addr).unwrap_or(0),
+            crate::game::MapperKind::Mmc1 => 0,
+        },
         0x6000..=0x7FFF => {
             #[cfg(feature = "wram-probe")]
             crate::wram_probe::note_read((addr - 0x6000) as usize);
             game.wram[(addr - 0x6000) as usize]
         }
         _ => {
-            // $8000-$FFFF: PRG ROM through MMC1.
-            let idx = game.mmc1.map_prg(addr, game.prg.len());
+            // $8000-$FFFF: PRG ROM through whichever mapper the ROM uses.
+            let idx = match game.mapper {
+                crate::game::MapperKind::Mmc1 => game.mmc1.map_prg(addr, game.prg.len()),
+                crate::game::MapperKind::Mmc5 => game.mmc5.map_prg(addr, game.prg.len()),
+            };
             game.prg[idx]
         }
     }
@@ -625,18 +633,46 @@ pub(crate) fn bus_write(game: &mut Game, addr: u16, val: u8) {
         }
         0x4016 => game.set_strobe(val),
         0x4018..=0x401F => {} // APU test-mode stub: ignore.
-        0x4020..=0x5FFF => {} // Expansion stub: ignore.
+        // MMC5 keeps its whole register file ($5100-$5FFF, ExRAM included)
+        // here. This arm used to swallow every write as an "expansion stub",
+        // which silently dropped all of MMC5's bank switching — the ROM would
+        // boot, jump to $C000, and find uninitialised $FF.
+        0x4020..=0x5FFF => {
+            if game.mapper == crate::game::MapperKind::Mmc5 {
+                let changed = game.mmc5.write(addr, val);
+                if changed && (0x5120..=0x5130).contains(&addr) {
+                    let cycles = game.cpu.cycles + BUS_ACCESS_OFFSET;
+                    game.ppu.mapper_sync_mmc5(&game.chr, &game.mmc5, cycles);
+                }
+            }
+        }
         0x6000..=0x7FFF => {
             #[cfg(feature = "wram-probe")]
             crate::wram_probe::note_write((addr - 0x6000) as usize);
             game.wram[(addr - 0x6000) as usize] = val;
         }
         _ => {
-            game.mmc1.write(addr, val);
+            match game.mapper {
+                crate::game::MapperKind::Mmc1 => game.mmc1.write(addr, val),
+                crate::game::MapperKind::Mmc5 => {
+                    // MMC5 lives in $5100-$5FFF; a write to $8000+ is not a
+                    // bank switch on this mapper (the ROM never does it).
+                    if !game.mmc5.write(addr, val) && addr < 0x6000 {
+                        // Ignored: MMC5 has no serial port.
+                    }
+                }
+            }
             // CHR/mirroring changes take effect from the beam's current
             // scanline (cheap no-op when the banks did not change).
             let cycles = game.cpu.cycles + BUS_ACCESS_OFFSET;
-            game.ppu.mapper_sync(&game.chr, &game.mmc1, cycles);
+            match game.mapper {
+                crate::game::MapperKind::Mmc1 => {
+                    game.ppu.mapper_sync(&game.chr, &game.mmc1, cycles);
+                }
+                crate::game::MapperKind::Mmc5 => {
+                    game.ppu.mapper_sync_mmc5(&game.chr, &game.mmc5, cycles);
+                }
+            }
         }
     }
 }

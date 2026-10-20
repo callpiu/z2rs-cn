@@ -88,6 +88,7 @@ use z2_ppu::{AccessKind, Ppu, PPUSTATUS_SPRITE0};
 pub use z2_ppu::{PPUSTATUS_SPRITE0 as STATUS_SPRITE0, PPUSTATUS_VBLANK as STATUS_VBLANK};
 
 use crate::cpu::{Mmc1, PpuBus};
+use crate::mmc5::Mmc5;
 
 /// CHR pattern-table slot bytes (one 4 KiB page per slot).
 use z2_ppu::CHR_BANK_LEN;
@@ -117,7 +118,12 @@ pub struct PpuBind {
     /// Last `(chr0, chr1, ctrl)` served by [`PpuBind::sync_from_mapper`];
     /// `None` forces the first sync (power-on banks must load even though
     /// they read `0`).
-    mapper_key: Option<(u8, u8, u8)>,
+    mapper_key: Option<u64>,
+    /// Every `$2007` write since the last drain, as `(vram address, value)`,
+    /// newest last. The dialog text hook (`z2-native`'s `--export-text`)
+    /// rebuilds the box text from it. Bounded: a dropped write costs one
+    /// letter, and the hook never runs when nobody reads it.
+    pub text_writes: VecDeque<(u16, u8)>,
     /// Sprite-0 hit observed by the last [`PpuBind::render_frame`] (the
     /// beam's answer for that frame). The model flag itself is cleared by
     /// [`Ppu::begin_frame`](z2_ppu::Ppu::begin_frame) mid-tail (pre-render
@@ -234,7 +240,10 @@ impl PpuBind {
     /// MMC1 register changed at `cycles`: advance the beam, then re-select
     /// CHR pages / mirroring so later scanlines use the new banks.
     pub fn mapper_sync(&mut self, chr_rom: &[u8], mmc1: &Mmc1, cycles: u64) {
-        let key = (mmc1.chr0, mmc1.chr1, mmc1.ctrl);
+        // Bit 63 tags the mapper so an MMC1 key can never alias an MMC5 one.
+        let key = u64::from(mmc1.chr0)
+            | (u64::from(mmc1.chr1) << 8)
+            | (u64::from(mmc1.ctrl) << 16);
         if self.mapper_key == Some(key) {
             return;
         }
@@ -256,7 +265,9 @@ impl PpuBind {
     /// bank-switch frame). Out-of-range bank selects leave the slot
     /// unchanged (see module docs).
     pub fn sync_from_mapper(&mut self, chr_rom: &[u8], mmc1: &Mmc1) {
-        let key = (mmc1.chr0, mmc1.chr1, mmc1.ctrl);
+        let key = u64::from(mmc1.chr0)
+            | (u64::from(mmc1.chr1) << 8)
+            | (u64::from(mmc1.ctrl) << 16);
         if self.mapper_key == Some(key) {
             return;
         }
@@ -274,6 +285,55 @@ impl PpuBind {
             }
         }
         self.ppu.set_mirroring_mmc1(mmc1.ctrl);
+    }
+
+    /// Frame-end MMC5 CHR re-sync (no beam advance: the caller already
+    /// positioned the beam at the frame end).
+    pub fn sync_from_mapper_mmc5(&mut self, chr_rom: &[u8], mmc5: &Mmc5) {
+        let mut key = 0x8000_0000_0000_0000u64 | u64::from(mmc5.chr_mode);
+        for (i, b) in mmc5.chr_banks.iter().enumerate() {
+            key |= u64::from(*b) << (4 + i * 6);
+        }
+        for (i, b) in mmc5.chr_upper.iter().enumerate() {
+            key |= u64::from(*b) << (52 + i * 2);
+        }
+        key |= u64::from(mmc5.chr_upper2 & 3) << 60;
+        if self.mapper_key == Some(key) {
+            return;
+        }
+        self.mapper_key = Some(key);
+        for page in 0u8..2 {
+            let data = mmc5.chr_slot_4k(chr_rom, page);
+            let bank = (mmc5.chr_bank_1k(usize::from(page) * 4) & 0xFF) as u8;
+            let _ = self.ppu.load_chr_4k(usize::from(page), bank, &data);
+        }
+    }
+
+    /// Re-select CHR pattern pages from MMC5 (1 KiB granularity).
+    ///
+    /// The PPU only knows 4 KiB slots, so each slot is stitched from the four
+    /// 1 KiB banks MMC5 currently maps there. Called whenever a `$5120-$512B`
+    /// write lands, so mid-frame bank switches take effect on the beam's
+    /// current scanline just like the MMC1 path.
+    pub fn mapper_sync_mmc5(&mut self, chr_rom: &[u8], mmc5: &Mmc5, cycles: u64) {
+        let mut key = 0x8000_0000_0000_0000u64 | u64::from(mmc5.chr_mode);
+        for (i, b) in mmc5.chr_banks.iter().enumerate() {
+            key |= u64::from(*b) << (4 + i * 6);
+        }
+        for (i, b) in mmc5.chr_upper.iter().enumerate() {
+            key |= u64::from(*b) << (52 + i * 2);
+        }
+        key |= u64::from(mmc5.chr_upper2 & 3) << 60;
+        if self.mapper_key == Some(key) {
+            return;
+        }
+        self.mapper_key = Some(key);
+        self.sync_access(cycles, AccessKind::Fetch);
+        for page in 0u8..2 {
+            let data = mmc5.chr_slot_4k(chr_rom, page);
+            let bank = (mmc5.chr_bank_1k(usize::from(page) * 4) & 0xFF) as u8;
+            let _ = self.ppu.load_chr_4k(usize::from(page), bank, &data);
+        }
     }
 
     /// Finish the frame at its end (line 239 done): renders every scanline
@@ -408,8 +468,14 @@ impl PpuBind {
             Some(true) => 2,
         });
         match self.mapper_key {
-            Some((a, b, c)) => w.bytes(&[1, a, b, c]),
-            None => w.bytes(&[0, 0, 0, 0]),
+            Some(k) => {
+                w.bytes(&[1]);
+                w.u64(k);
+            }
+            None => {
+                w.bytes(&[0]);
+                w.u64(0);
+            }
         }
         w.bool(self.last_hit);
         w.u64(self.origin_dots);
@@ -433,7 +499,7 @@ impl PpuBind {
             2 => Some(true),
             _ => return Err(StateError::Invalid("sprite-0 override")),
         };
-        let mk = (r.bool()?, r.u8()?, r.u8()?, r.u8()?);
+        let mk = (r.bool()?, r.u64()?);
         let last_hit = r.bool()?;
         let origin_dots = r.u64()?;
         let prerender_dots = r.u16()?;
@@ -445,7 +511,7 @@ impl PpuBind {
         self.last_write = lw.0.then_some((lw.1, lw.2));
         self.oam_addr = oam_addr;
         self.force_sprite0 = force;
-        self.mapper_key = mk.0.then_some((mk.1, mk.2, mk.3));
+        self.mapper_key = mk.0.then_some(mk.1);
         self.last_hit = last_hit;
         self.origin_dots = origin_dots;
         self.prerender_dots = prerender_dots;

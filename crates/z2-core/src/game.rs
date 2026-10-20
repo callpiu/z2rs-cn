@@ -44,6 +44,8 @@
 #[cfg(feature = "interp")]
 use crate::cpu::{Cpu, ExecError, Mmc1, NullApu, FLAG_C, FLAG_N, FLAG_Z};
 #[cfg(feature = "interp")]
+use crate::mmc5::Mmc5;
+#[cfg(feature = "interp")]
 use crate::ppu_bind::PpuBind;
 #[cfg(feature = "interp")]
 use crate::traps::{Divergence, TrapExit, TrapFn, TrapLog, TrapTable};
@@ -229,6 +231,20 @@ pub fn zeroed_frame() -> Box<[u8; FRAME_LEN]> {
     }
 }
 
+/// Which cartridge mapper the loaded ROM uses.
+///
+/// The original game is MMC1; the Chinese translation is MMC5 (it needs
+/// 512 KiB of CHR for the translated glyph sheets). Everything that touches
+/// banking dispatches on this.
+#[cfg(feature = "interp")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapperKind {
+    /// Original Zelda II (`mapper 1`).
+    Mmc1,
+    /// Chinese translation (`mapper 5`).
+    Mmc5,
+}
+
 /// Live hybrid-execution state: shared RAM mirror + interpreter + traps.
 ///
 /// See the module docs for the ownership/contract notes.
@@ -256,6 +272,12 @@ pub struct Game {
     /// MMC1 mapper (interp only).
     #[cfg(feature = "interp")]
     pub mmc1: Mmc1,
+    /// MMC5 mapper (interp only) — used by the Chinese-translated ROM.
+    #[cfg(feature = "interp")]
+    pub mmc5: Mmc5,
+    /// Which mapper the loaded ROM actually uses.
+    #[cfg(feature = "interp")]
+    pub mapper: MapperKind,
     /// Real-PPU binding: the interpreter bus routes
     /// `$2000-$2007` here and `$4014` DMA forwards here; [`Game::step`]
     /// renders one frame per step into it (see [`crate::ppu_bind`]).
@@ -370,6 +392,10 @@ impl Game {
             #[cfg(feature = "interp")]
             mmc1: Mmc1::new(),
             #[cfg(feature = "interp")]
+            mmc5: Mmc5::new(),
+            #[cfg(feature = "interp")]
+            mapper: MapperKind::Mmc1,
+            #[cfg(feature = "interp")]
             ppu: PpuBind::new(),
             #[cfg(feature = "interp")]
             apu: NullApu::default(),
@@ -432,9 +458,13 @@ impl Game {
         let flags6 = bytes[6];
         let flags7 = bytes[7];
         let mapper = (flags7 & 0xF0) | (flags6 >> 4);
-        if mapper != 1 {
-            return Err(LoadError::WrongMapper(mapper));
-        }
+        // MMC1 = original game; MMC5 = the Chinese translation. Anything
+        // else still fails, because neither mapper model would be correct.
+        let kind = match mapper {
+            1 => MapperKind::Mmc1,
+            5 => MapperKind::Mmc5,
+            other => return Err(LoadError::WrongMapper(other)),
+        };
         if prg_units == 0 {
             return Err(LoadError::NoPrg);
         }
@@ -456,6 +486,13 @@ impl Game {
         } else {
             bytes[off + prg_len..off + prg_len + chr_len].to_vec()
         };
+        game.mapper = kind;
+        if kind == MapperKind::Mmc5 {
+            // MMC5 powers up with every bank register at 0, which would put
+            // bank 0 (no vector table) at $E000-$FFFF. Pin the last banks
+            // instead — see `Mmc5::init_fix_last`.
+            game.mmc5.init_fix_last(game.prg.len());
+        }
         // Bit 0: 0 = horizontal, 1 = vertical (keep power-on PRG mode 3).
         let mirr = if flags6 & 0x01 != 0 { 2 } else { 3 };
         game.mmc1.ctrl = (game.mmc1.ctrl & !3) | mirr;
@@ -689,7 +726,15 @@ impl Game {
     /// reached with the live state, and latch the framebuffer.
     #[cfg(feature = "interp")]
     fn capture_frame(&mut self, end: u64) {
-        self.ppu.sync_from_mapper(&self.chr, &self.mmc1);
+        // Banking re-sync must follow whichever mapper the ROM uses: MMC1's
+        // `sync_from_mapper` would overwrite MMC5's 1 KiB CHR banks with the
+        // MMC1 registers (which MMC5 ROMs never write), blanking the screen.
+        match self.mapper {
+            MapperKind::Mmc1 => self.ppu.sync_from_mapper(&self.chr, &self.mmc1),
+            MapperKind::Mmc5 => {
+                self.ppu.sync_from_mapper_mmc5(&self.chr, &self.mmc5);
+            }
+        }
         self.ppu.sync_cycles(end);
         self.ppu.finish_frame_into(&mut self.frame);
     }
