@@ -928,3 +928,92 @@ bash deploy.sh
    `z2rs.exe`（游戏）/ `z2-launcher.exe`（启动器）/ `z2-signal.exe`（辅助）。
    曾经复制过 `z2rs-launcher.exe`、`z2rs-native.exe`，导致同目录两份启动器
    一新一旧，用户点到旧的会以为更新没生效。
+
+
+---
+
+## 2026-10-22：移植到官方 0.6.0
+
+源码目录 `D:\z2rs-060-zh`，发布目录 `D:\z2rs-中文版-0.6.0`。
+
+### 怎么做的
+
+旧仓库（`D:\下载\Compressed\main\z2rs-main`）没有配置 remote，官方源码
+是用户下载的 `z2rs-0.6.0.zip`。用 git 历史做三方合并：
+
+1. 解压 0.6.0，`git init` + 提交为 `736f8e1 upstream z2rs 0.6.0`
+2. 旧仓库里把未提交的改动落成提交 `4c0b6dc`
+3. 新仓库 `git remote add old <旧仓库>`、`fetch`，再
+   `git cherry-pick daa89c2..old/master`
+
+这样 git 能用「父提交」做真正的三方合并，比 `git apply --3way` 靠谱
+（后者报 `repository lacks the necessary blob`，因为新仓库没有基线对象）。
+
+### 冲突（6 处，全部手工解）
+
+| 文件 | 冲突内容 | 解法 |
+|---|---|---|
+| `z2-core/src/cpu.rs` | 0.6.0 在 `$6000-$7FFF` 加了 `wram-probe` | 两边都要：MMC5 分支 + probe |
+| `z2-core/src/ppu_bind.rs` | `mapper_key` 类型 + `text_writes` 字段 | 用我们的 `Option<u64>`；`text_writes` **删掉**（0.6.0 已移除该机制） |
+| `z2-render/src/compositor.rs` | `ComposeInput` 加 `time`（上游）/ `text_rect`（我们） | 两个字段都留 |
+| `z2-render/src/presenter.rs` | 同上，构造处 | 两个字段都传 |
+| `z2-render/tests/bench.rs` | 同上 | 同上 |
+| `z2-render/tests/compositor.rs` | 同上 + 函数错位 | 见下 |
+
+**`tests/compositor.rs` 的做法**：不要逐块合并。以 0.6.0 的文件为基准，
+把我们新增的 5 个测试函数**追加**到末尾即可（它们只依赖上游已有的
+helper）。逐块拼会把 `compose_at` 的函数体挤掉、`ComposeInput` 字面量
+字段重复或缺失 —— 我踩过，错误很多。
+
+### 移植后必须跟着改的两处
+
+1. **`Enhancements` 新增 `content` 字段**（官方新 crate `z2-content`）。
+   任何**完整结构体字面量**都要补 `content: Default::default()`，
+   否则 `missing field`。
+
+2. **`ComposeInput` 的 `Copy`**：0.6.0 是 `#[derive(Debug, Clone, Copy)]`，
+   我们旧版改成了 `Clone`。测试里大量 `..input` 结构体更新要求 `Copy`，
+   恢复成 `Copy`（`text_rect` 是 `Option<TextRect>`，可 Copy）。
+
+3. **`sprite_page` 回退**：我们为 MMC5 把边缘精灵改成读 `sprite_page`，
+   但 0.6.0 的测试/调用方只设 `chr_page`，`sprite_page` 停在 `NO_PAGE`
+   就画成黑色（`enemies_in_the_margins_replace_their_own_margin_sprites`
+   因此失败）。改成：
+
+   ```rust
+   let page = match rec.sprite_page[table] {
+       NO_PAGE => rec.chr_page[table],   // 未填 = 未拆分，沿用背景页
+       page => page,
+   };
+   ```
+
+   同时 `margin_sprite_row_expansion_8x8_and_8x16` 里「无 CHR 页」的断言
+   要**同时**清 `chr_page`，否则回退后不再返回 `None`。
+
+### 验证
+
+```
+核心（z2-core + z2-ppu + z2-render）：957 项全过
+汉化 ROM 端到端（mmc5_zh_rom）：     24 项全过
+美版 headless 冒烟：                 faults 0
+汉化 headless 冒烟：                 faults 0
+材质包：新包 / 旧包 v0.1.1 / 无包    全部正常
+```
+
+### 一个坑：PowerShell 重定向会毁掉 git 输出
+
+`git diff > file`、`git show > file` 用 PowerShell 重定向会写成 UTF-16，
+后续 `git apply` 报 `No valid patches in input`。用 `cmd /c "git ... > file"`。
+
+### 发布
+
+```
+D:\z2rs-中文版-0.6.0\
+  z2rs.exe          59,620,603  233315db30d4
+  z2-launcher.exe   25,078,554  2bb0ce4e72a4
+  z2-signal.exe      5,263,495  c3eb613d360d
+  SHA256SUMS / 版本说明.txt / README-官方.md / HOW-TO-PLAY.txt / LEGAL.md / LICENSE
+  z2rs-中文版-0.6.0.zip  29,899,417  3a1ce34f221f
+```
+
+与 `D:\z2rs-中文版`（旧版基线）并存，互不影响。
