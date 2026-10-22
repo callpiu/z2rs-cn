@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::chr::{chr_page, paint_page_sheet, CHR_PAGES};
+use crate::chr::{chr_page, paint_page_sheet, MAX_CHR_PAGES};
 use crate::pack::{PackManifest, SheetEntry, PACK_FORMAT, PACK_MANIFEST, PACK_VERSION};
 use crate::palette::MasterPalette;
 use crate::png_io::{encode_png_rgba, PngError, RgbaImage};
@@ -81,7 +81,7 @@ impl fmt::Display for TemplateError {
             TemplateError::Scale(s) => write!(f, "scale {s} out of range (1..={MAX_SCALE})"),
             TemplateError::NoPages => write!(f, "nothing to write: no pages selected / recorded"),
             TemplateError::Page(p) => {
-                write!(f, "CHR page {p} out of range (0..={})", CHR_PAGES - 1)
+                write!(f, "CHR page {p} out of range (0..={})", MAX_CHR_PAGES - 1)
             }
             TemplateError::ChrTooShort { page, len } => write!(
                 f,
@@ -192,7 +192,9 @@ pub fn template_from_chr(
     let mut manifest = empty_manifest(opts.name, opts.scale);
     let mut sheets = Vec::with_capacity(pages.len());
     for &page in &pages {
-        if usize::from(page) >= CHR_PAGES {
+        // Any page the CHR image actually has, not just the vanilla 32: a
+        // translated (MMC5) ROM is 512 KiB = 128 pages.
+        if usize::from(page) >= MAX_CHR_PAGES {
             return Err(TemplateError::Page(page));
         }
         let bytes = chr_page(chr_rom, page).ok_or(TemplateError::ChrTooShort {

@@ -541,7 +541,7 @@ pub(crate) fn register(game: &mut Game, opts: &QolOpts) {
         );
     }
     if opts.no_mp_requirement_for_spells {
-        let off = 3 * 0x4000 + usize::from(WISE_MAN_CHECK & 0x3FFF);
+        let off = super::prg_offset(game, 3, WISE_MAN_CHECK);
         if game.prg.get(off..off + 2) == Some(&WISE_MAN_CHECK_BYTES[..]) {
             super::patch_prg_at(game, 3, WISE_MAN_CHECK, &[0xEA, 0xEA]);
         }

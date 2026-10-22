@@ -204,6 +204,44 @@ impl Mirroring {
         }
     }
 
+    /// Decode MMC5's `$5105` nametable-mapping register into the nearest
+    /// [`Mirroring`] the PPU can represent.
+    ///
+    /// `$5105` assigns each logical screen (`$2000`, `$2400`, `$2800`,
+    /// `$2C00`) its own 2-bit source in bits 1-0 / 3-2 / 5-4 / 7-6:
+    /// `0` = NT A, `1` = NT B, `2` = ExRAM, `3` = fill mode. The PPU model
+    /// has two physical nametables and no ExRAM/fill support, so:
+    ///
+    /// * `$44` = screens `A, B, A, B` -> **vertical** (columns mirror).
+    /// * `$50` = screens `A, A, B, B` -> **horizontal** (rows mirror).
+    ///
+    /// Both appear in the translated ROM (it writes `$44` at boot and `$50`
+    /// later), so the mapping has to be decoded rather than assumed.
+    ///
+    /// Anything with an ExRAM (2) or fill (3) source falls back to the
+    /// closest two-nametable layout rather than being ignored: a wrong
+    /// mirroring makes whole scenes draw with tiles from the other
+    /// nametable, which is exactly the "scrambled graphics" symptom.
+    #[must_use]
+    pub fn from_mmc5_nt_map(map: u8) -> Self {
+        let src = |logical: u8| (map >> ((logical & 3) * 2)) & 3;
+        // ExRAM / fill sources have no PPU nametable equivalent; treat them
+        // as the A screen so the picture at least stays self-consistent.
+        let a = |l: u8| usize::from(src(l).min(1));
+        match (a(0), a(1), a(2), a(3)) {
+            // A, B, A, B (`$44`) -> vertical: $2800 mirrors $2000.
+            (0, 1, 0, 1) => Mirroring::Vertical,
+            // A, A, B, B (`$50`) -> horizontal: $2400 mirrors $2000.
+            (0, 0, 1, 1) => Mirroring::Horizontal,
+            // Everything on one screen.
+            (0, 0, 0, 0) => Mirroring::SingleLower,
+            (1, 1, 1, 1) => Mirroring::SingleUpper,
+            // Any other (four-screen or mixed) layout: keep the two screens
+            // distinct in the vertical arrangement, the common default.
+            _ => Mirroring::Vertical,
+        }
+    }
+
     /// Map a logical slot (`0=$2000 .. 3=$2C00`) to a physical nametable.
     #[must_use]
     pub fn physical(self, logical: usize) -> usize {
@@ -311,8 +349,18 @@ pub struct Ppu {
     nt: [[u8; NAMETABLE_LEN]; 2],
     mirroring: Mirroring,
     chr: [[u8; CHR_BANK_LEN]; 2],
-    /// Asset CHR page (0-31) backing each slot, `u8::MAX` when unset.
+    /// Asset CHR page backing each slot, `u8::MAX` when unset.
     chr_page_no: [u8; 2],
+    /// **Background-only** CHR slots, used when a mapper gives background and
+    /// sprite fetches *different* banks (MMC5 in 8x16-sprite mode: sprites
+    /// use the `$5120-$5127` "A" set, background the `$5128-$512B` "B" set).
+    ///
+    /// `None` for every other mapper, in which case `chr` backs both. Keeping
+    /// this separate rather than doubling the array means the MMC1 path and
+    /// every existing test are byte-for-byte unchanged.
+    chr_bg: Option<[[u8; CHR_BANK_LEN]; 2]>,
+    /// Asset CHR page backing each `chr_bg` slot, `u8::MAX` when unset.
+    chr_bg_page_no: [u8; 2],
     oam: [u8; OAM_LEN],
     oam_addr: u8,
     palette_ram: [u8; PALETTE_LEN],
@@ -373,6 +421,8 @@ impl Ppu {
             mirroring: Mirroring::Vertical,
             chr: [[0; CHR_BANK_LEN]; 2],
             chr_page_no: [u8::MAX; 2],
+            chr_bg: None,
+            chr_bg_page_no: [u8::MAX; 2],
             oam: [0xFF; OAM_LEN],
             oam_addr: 0,
             palette_ram: [0; PALETTE_LEN],
@@ -618,7 +668,11 @@ impl Ppu {
             hi: self.chr_byte(table, tile, fine_y, true),
             pal,
             id: BgTileId {
-                page: self.chr_page_no[table & 1],
+                // The background may be backed by a different bank set than
+                // the sprites (MMC5 8x16 mode); the record must name the page
+                // these background pixels actually came from, because that is
+                // what the widescreen/HD decoders read it back with.
+                page: self.bg_page_no(table),
                 tile,
                 pal,
                 fine_y,
@@ -759,7 +813,16 @@ impl Ppu {
         l.fine_x_end = self.fine_x;
         l.ctrl = self.ppuctrl;
         l.mask = self.ppumask;
-        l.chr_page = self.chr_page_no;
+        // Background pages: this is what every *reader* of the record uses to
+        // re-fetch the pixels (widescreen margins, HD packs). With MMC5 in
+        // 8x16-sprite mode the background and sprite banks differ, so storing
+        // the sprite pages here made those consumers sample the wrong CHR.
+        l.chr_page = [self.bg_page_no(0), self.bg_page_no(1)];
+        // Sprite pages, kept separate: the margin-sprite path re-fetches
+        // sprite patterns and must not read the background banks. Before this
+        // field existed it used `chr_page`, so on a translated ROM the margin
+        // sprites came out as fragments of the Chinese text pages.
+        l.sprite_page = self.chr_page_no;
         l.palette = self.palette_ram;
         l.backdrop = self.apply_gray(self.backdrop_entry());
         l.split = self.line.split;
@@ -1154,18 +1217,108 @@ impl Ppu {
         self.chr_page_no[slot & 1]
     }
 
+    /// Load one 4 KiB CHR page into the **background-only** slot `slot`
+    /// (`0=$0000-$0FFF`, `1=$1000-$1FFF`).
+    ///
+    /// Only mappers that give background and sprite fetches different banks
+    /// need this (MMC5 with 8x16 sprites); everything else leaves it `None`
+    /// and `chr` backs both. The background slots are separate storage, so
+    /// loading them never disturbs the sprite ones.
+    pub fn load_chr_4k_bg(
+        &mut self,
+        slot: usize,
+        asset_page: u8,
+        data: &[u8],
+    ) -> Result<(), ChrError> {
+        if slot > 1 {
+            return Err(ChrError::BadSlot { slot });
+        }
+        if data.len() != CHR_BANK_LEN {
+            return Err(ChrError::BadLength { got: data.len() });
+        }
+        let bg = self.chr_bg.get_or_insert_with(|| [[0; CHR_BANK_LEN]; 2]);
+        bg[slot].copy_from_slice(data);
+        self.chr_bg_page_no[slot] = asset_page;
+        self.probe_cache = None;
+        self.note_fetch_change();
+        Ok(())
+    }
+
+    /// Drop the background-only slots, so `chr` backs both fetch paths again.
+    ///
+    /// Called when a mapper stops needing the split (or is not MMC5), so a
+    /// ROM swap cannot leave stale background art behind.
+    pub fn clear_chr_bg(&mut self) {
+        if self.chr_bg.take().is_some() {
+            self.chr_bg_page_no = [u8::MAX; 2];
+            self.probe_cache = None;
+            self.note_fetch_change();
+        }
+    }
+
+    /// Whether a separate background CHR set is in use.
+    #[must_use]
+    pub fn has_chr_bg(&self) -> bool {
+        self.chr_bg.is_some()
+    }
+
+    /// Asset CHR page backing background `slot`, or `u8::MAX` when unset.
+    #[must_use]
+    pub fn chr_bg_page_no(&self, slot: usize) -> u8 {
+        self.chr_bg_page_no[slot & 1]
+    }
+
+    /// Asset CHR page that **background** fetches from pattern table `table`
+    /// read right now: the background set when one is loaded (MMC5), else the
+    /// shared set.
+    #[must_use]
+    pub fn bg_page_no(&self, table: usize) -> u8 {
+        if self.chr_bg.is_some() {
+            self.chr_bg_page_no[table & 1]
+        } else {
+            self.chr_page_no[table & 1]
+        }
+    }
+
     /// Borrow one loaded 4 KiB pattern-table slot (diagnostics / oracle diffs).
     #[must_use]
     pub fn chr_slot(&self, slot: usize) -> &[u8; CHR_BANK_LEN] {
         &self.chr[slot & 1]
     }
 
-    /// Raw pattern-table byte: `table` 0/1, `tile` 0-255, `row` 0-7,
-    /// `hi` selects bit plane 1.
+    /// Raw pattern-table byte for a **sprite/background** fetch.
+    ///
+    /// `sprites` picks the bank set: mappers that split them (MMC5) load
+    /// `chr_bg` for background, everything else leaves `chr_bg` `None` and
+    /// both paths read `chr`.
+    #[must_use]
+    pub(crate) fn chr_byte_kind(
+        &self,
+        table: usize,
+        tile: u8,
+        row: u8,
+        hi: bool,
+        sprites: bool,
+    ) -> u8 {
+        let base = (tile as usize) * 16 + (row as usize & 0x07);
+        let bank = match (sprites, &self.chr_bg) {
+            (false, Some(bg)) => &bg[table & 1],
+            _ => &self.chr[table & 1],
+        };
+        bank[base + if hi { 8 } else { 0 }]
+    }
+
+    /// Raw pattern-table byte for a **background** fetch: `table` 0/1,
+    /// `tile` 0-255, `row` 0-7, `hi` selects bit plane 1.
     #[must_use]
     pub(crate) fn chr_byte(&self, table: usize, tile: u8, row: u8, hi: bool) -> u8 {
-        let base = (tile as usize) * 16 + (row as usize & 0x07);
-        self.chr[table & 1][base + if hi { 8 } else { 0 }]
+        self.chr_byte_kind(table, tile, row, hi, false)
+    }
+
+    /// Raw pattern-table byte for a **sprite** fetch.
+    #[must_use]
+    pub(crate) fn chr_byte_sprite(&self, table: usize, tile: u8, row: u8, hi: bool) -> u8 {
+        self.chr_byte_kind(table, tile, row, hi, true)
     }
 
     // -- OAM -----------------------------------------------------------------
@@ -1781,6 +1934,24 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MMC5 `$5105` decides the nametable layout. The translated ROM writes
+    /// `$44` at boot; ignoring it left the PPU on its *vertical* power-on
+    /// default, so scenes drew with tiles out of the wrong nametable.
+    #[test]
+    fn mmc5_nt_map_decodes_to_the_right_mirroring() {
+        // `$44` = screens A, B, A, B -> vertical (columns mirror).
+        assert_eq!(Mirroring::from_mmc5_nt_map(0x44), Mirroring::Vertical);
+        // `$50` = screens A, A, B, B -> horizontal (rows mirror).
+        assert_eq!(Mirroring::from_mmc5_nt_map(0x50), Mirroring::Horizontal);
+        // All four screens on one nametable.
+        assert_eq!(Mirroring::from_mmc5_nt_map(0x00), Mirroring::SingleLower);
+        assert_eq!(Mirroring::from_mmc5_nt_map(0x55), Mirroring::SingleUpper);
+        // ExRAM (2) / fill (3) sources have no PPU nametable equivalent; they
+        // clamp to screen B, so `$AA` (all ExRAM) reads as one screen.
+        assert_eq!(Mirroring::from_mmc5_nt_map(0xAA), Mirroring::SingleUpper);
+        assert_eq!(Mirroring::from_mmc5_nt_map(0xFF), Mirroring::SingleUpper);
+    }
 
     #[test]
     fn mmc1_mirroring_modes_fold_logical_slots() {

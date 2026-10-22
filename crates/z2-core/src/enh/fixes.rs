@@ -129,14 +129,14 @@ const SCRATCH_DIALOG: usize = 5;
 const SCRATCH_MODE: usize = 6;
 
 /// Fixed-bank (bank 7) offset of `addr` in the PRG image (the last bank;
-/// see [`super::bank_offset`]).
+/// see [`super::prg_offset`]).
 fn bank7_offset(game: &Game, addr: u16) -> usize {
-    super::bank_offset(game.prg.len(), 7, addr)
+    super::prg_offset(game, 7, addr)
 }
 
 /// Bytes at bank `bank`, CPU `addr` equal `want`.
 fn bytes_are(game: &Game, bank: u8, addr: u16, want: &[u8]) -> bool {
-    let off = super::bank_offset(game.prg.len(), bank, addr);
+    let off = super::prg_offset(game, bank, addr);
     game.prg.get(off..off + want.len()) == Some(want)
 }
 

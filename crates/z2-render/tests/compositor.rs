@@ -154,6 +154,7 @@ fn compose(
             palette: &MasterPalette::NES,
             scene: None,
             time: None,
+            text_rect: None,
         },
         &mut out,
     )
@@ -611,6 +612,7 @@ fn geometry_and_scale_errors() {
         palette: &MasterPalette::NES,
         scene: None,
         time: None,
+        text_rect: None,
     };
     assert_eq!(
         c.compose(input, &mut out).unwrap_err(),
@@ -1165,6 +1167,7 @@ fn compose_scene(
             palette: &MasterPalette::NES,
             scene,
             time: None,
+            text_rect: None,
         },
         &mut out,
     )
@@ -1901,6 +1904,7 @@ fn compose_at(
             palette: &MasterPalette::NES,
             scene: None,
             time,
+            text_rect: None,
         },
         &mut out,
     )
@@ -2011,4 +2015,319 @@ fn malformed_animated_or_drifting_layers_are_rejected() {
     )
     .unwrap_err();
     assert!(err.contains("share one size"), "{err}");
+}
+
+// ---- 中文版 / MMC5 相关 ----
+
+#[test]
+fn back_layer_does_not_bleed_through_a_text_window() {
+    let mut chr = chr_image();
+    // A glyph tile on the background page: one opaque column, transparent rest.
+    const GLYPH: u8 = 0xDA;
+    for r in 0..8 {
+        let base = BG_PAGE as usize * CHR_BANK_LEN + usize::from(GLYPH) * 16 + r;
+        chr[base] = 0x80;
+        chr[base + 8] = 0x00;
+    }
+
+    let mut p = scene(&chr);
+    let (frame, mut rec) = frame_and_record(&mut p);
+
+    // One line: `$CC` edges at slots 4 and 20, glyph tiles between them.
+    let line_y = 100usize;
+    let base_tile = rec.lines[line_y].tiles[0];
+    let mk = move |tile: u8| BgTileId {
+        tile,
+        fetched: true,
+        ..base_tile
+    };
+    rec.lines[line_y].tiles[4] = mk(0xCC);
+    rec.lines[line_y].tiles[20] = mk(0xCC);
+    for slot in 5..20 {
+        rec.lines[line_y].tiles[slot] = mk(GLYPH);
+    }
+    // Well outside the window, keep transparent glyph tiles too, so the back
+    // layer has somewhere to show there.
+    for slot in [1usize, 2, 3, 21, 22] {
+        rec.lines[line_y].tiles[slot] = mk(GLYPH);
+    }
+
+    // A pack whose only content is a full-screen BACK layer.
+    let pack = pack_from(
+        "\"layers\":[{\"file\":\"bg.png\",\"depth\":\"back\",\"scroll\":0}]",
+        vec![("bg.png", common::solid_png(256, 240, PINK))],
+    );
+
+    let mut c = Compositor::new(1).unwrap();
+    let mut out = vec![0u8; c.rgba_len()];
+    c.compose(
+        ComposeInput {
+            indexed: IndexedView::frame(&frame),
+            record: &rec,
+            chr_rom: &chr,
+            pack: Some(&pack),
+            margins: None,
+            palette: &MasterPalette::NES,
+            scene: None,
+            text_rect: None,
+            time: None,
+        },
+        &mut out,
+    )
+    .expect("compose");
+
+    // A transparent glyph column inside the window must show the backdrop, not
+    // the back layer's PINK.
+    let inside_gap = px(&out, 12 * 8 + 1, line_y);
+    assert_ne!(
+        inside_gap, PINK,
+        "the back layer bled through a text-window gap (x=97, y={line_y})"
+    );
+    // Outside the window, a backdrop-coloured column still gets the back layer.
+    let outside = px(&out, 1 * 8 + 1, line_y);
+    assert_eq!(
+        outside, PINK,
+        "the back layer should still cover the scene outside the window"
+    );
+}
+
+#[test]
+fn hd_art_gives_way_inside_a_text_window() {
+    let chr = chr_image();
+    let mut p = scene(&chr);
+    
+    let (frame, mut rec) = frame_and_record(&mut p);
+
+    // Put a window frame across the middle of one line: `$CC` borders at
+    // slots 4 and 20 (a line records 34 fetches, one slot per 8-px tile).
+    let line_y = 100usize;
+    let solid = rec.lines[line_y].tiles[0];
+    let border = BgTileId {
+        page: solid.page,
+        tile: 0xCC,
+        fetched: true,
+        ..solid
+    };
+    // Two border slots at least 8 apart make a window span.
+    for slot in [4usize, 20] {
+        rec.lines[line_y].tiles[slot] = border;
+    }
+
+    // A pack with HD art for every tile on that page: a 16x16 grid of 8-px
+    // cells, so whatever the scene fetches would otherwise come out PINK.
+    let tiles: Vec<String> = (0..256)
+        .map(|t| {
+            format!(
+                "{{\"page\":{},\"tile\":{t},\"sheet\":\"s.png\",\"x\":{},\"y\":{}}}",
+                solid.page,
+                (t % 16) * 8,
+                (t / 16) * 8
+            )
+        })
+        .collect();
+    let pack = pack_from(
+        &format!(
+            "\"sheets\":[{{\"file\":\"s.png\"}}],\"tiles\":[{}]",
+            tiles.join(",")
+        ),
+        vec![("s.png", common::solid_png(128, 128, PINK))],
+    );
+
+    let mut c = Compositor::new(1).unwrap();
+    let mut out = vec![0u8; c.rgba_len()];
+    let input = ComposeInput {
+        indexed: IndexedView::frame(&frame),
+        record: &rec,
+        chr_rom: &chr,
+        pack: Some(&pack),
+        margins: None,
+        palette: &MasterPalette::NES,
+        scene: None,
+        text_rect: None,
+        time: None,
+    };
+    c.compose(input, &mut out).expect("compose");
+
+    // Inside the window (between the border slots): the NES glyph shows, not
+    // the pack's PINK.
+    let inside = px(&out, 13 * 8, line_y);
+    assert_ne!(
+        inside, PINK,
+        "HD art was painted inside the text window (x=104, y={line_y})"
+    );
+    // Outside the window on the same line: HD art is still applied.
+    let outside = px(&out, 2 * 8, line_y);
+    assert_eq!(
+        outside, PINK,
+        "HD art should still cover the scene outside the window"
+    );
+}
+
+#[test]
+fn hd_art_gives_way_on_window_content_rows() {
+    let chr = chr_image();
+    let mut p = scene(&chr);
+    let (frame, mut rec) = frame_and_record(&mut p);
+
+    // A 3-row window spanning lines 96..=112: full border on the first and last
+    // row, two `$CC` edges with a glyph tile between on the middle row.
+    let page = rec.lines[96].tiles[0].page;
+    let base = rec.lines[96].tiles[0];
+    let mk = move |tile: u8| BgTileId {
+        page,
+        tile,
+        fetched: true,
+        ..base
+    };
+    // Content row: vertical edges at slots 5 and 24, glyphs between.
+    let content_y = 104usize;
+    rec.lines[content_y].tiles[5] = mk(0xCC);
+    rec.lines[content_y].tiles[24] = mk(0xCC);
+    for slot in 6..24 {
+        rec.lines[content_y].tiles[slot] = mk(0xEA);
+    }
+
+    // HD art for every tile on the page.
+    let tiles: Vec<String> = (0..256)
+        .map(|t| {
+            format!(
+                "{{\"page\":{page},\"tile\":{t},\"sheet\":\"s.png\",\"x\":{},\"y\":{}}}",
+                (t % 16) * 8,
+                (t / 16) * 8
+            )
+        })
+        .collect();
+    let pack = pack_from(
+        &format!(
+            "\"sheets\":[{{\"file\":\"s.png\"}}],\"tiles\":[{}]",
+            tiles.join(",")
+        ),
+        vec![("s.png", common::solid_png(128, 128, PINK))],
+    );
+
+    let mut c = Compositor::new(1).unwrap();
+    let mut out = vec![0u8; c.rgba_len()];
+    c.compose(
+        ComposeInput {
+            indexed: IndexedView::frame(&frame),
+            record: &rec,
+            chr_rom: &chr,
+            pack: Some(&pack),
+            margins: None,
+            palette: &MasterPalette::NES,
+            scene: None,
+            text_rect: None,
+            time: None,
+        },
+        &mut out,
+    )
+    .expect("compose");
+
+    // A glyph slot in the middle of the window: the NES glyph, not HD PINK.
+    let glyph = px(&out, 12 * 8, content_y);
+    assert_ne!(
+        glyph, PINK,
+        "HD art covered a window content row (x=96, y={content_y})"
+    );
+    // Outside the window on the same row: HD still applies.
+    let outside = px(&out, 1 * 8, content_y);
+    assert_eq!(
+        outside, PINK,
+        "HD art should still cover the scene outside the window"
+    );
+}
+
+#[test]
+fn over_tiles_match_the_traditional_page_offset() {
+    let pack = pack_from(
+        "\"layers\":[{\"file\":\"g.png\",\"depth\":\"front\",\"scroll\":0,\
+         \"over_tiles\":[{\"page\":7,\"tile\":75}]}]",
+        vec![("g.png", common::solid_png(64, 32, PINK))],
+    );
+    let layer = &pack.layers()[0];
+    // Simplified layout: exact page.
+    assert!(layer.covers_tile(7, 75), "exact page should match");
+    // Traditional layout: same art, page + 64.
+    assert!(
+        layer.covers_tile(7 + 64, 75),
+        "traditional page 0x47 (= 7 + 64) should match too"
+    );
+    // A different tile on the same page still does not match.
+    assert!(!layer.covers_tile(7 + 64, 76), "tile must still match");
+    // Nor an unrelated page.
+    assert!(!layer.covers_tile(9, 75), "page must still match");
+}
+
+#[test]
+fn text_window_shows_rom_pixels_whatever_the_pack_paints() {
+    let chr = chr_image();
+    let mut p = scene(&chr);
+    let (frame, mut rec) = frame_and_record(&mut p);
+
+    let line_y = 100usize;
+    let base = rec.lines[line_y].tiles[0];
+    let mk = move |tile: u8| BgTileId {
+        tile,
+        fetched: true,
+        ..base
+    };
+    rec.lines[line_y].tiles[4] = mk(0xCC);
+    rec.lines[line_y].tiles[20] = mk(0xCC);
+    for slot in 5..20 {
+        rec.lines[line_y].tiles[slot] = mk(TILE_FLAT1);
+    }
+
+    let tiles: Vec<String> = (0..256)
+        .map(|t| {
+            format!(
+                "{{\"page\":{},\"tile\":{t},\"sheet\":\"s.png\",\"x\":{},\"y\":{}}}",
+                BG_PAGE,
+                (t % 16) * 8,
+                (t / 16) * 8
+            )
+        })
+        .collect();
+    let pack = pack_from(
+        &format!(
+            "\"sheets\":[{{\"file\":\"s.png\"}}],\
+             \"layers\":[{{\"file\":\"s.png\",\"depth\":\"back\",\"scroll\":0}},\
+                         {{\"file\":\"s.png\",\"depth\":\"front\",\"scroll\":0}}],\
+             \"tiles\":[{}]",
+            tiles.join(",")
+        ),
+        vec![("s.png", common::solid_png(128, 128, PINK))],
+    );
+
+    let mut c = Compositor::new(1).unwrap();
+    let mut out = vec![0u8; c.rgba_len()];
+    c.compose(
+        ComposeInput {
+            indexed: IndexedView::frame(&frame),
+            record: &rec,
+            chr_rom: &chr,
+            pack: Some(&pack),
+            margins: None,
+            palette: &MasterPalette::NES,
+            scene: None,
+            text_rect: None,
+            time: None,
+        },
+        &mut out,
+    )
+    .expect("compose");
+
+    // Every pixel inside the window must be a NES colour, never the pack's PINK.
+    for x in (4 * 8)..=(20 * 8 + 7) {
+        let got = px(&out, x, line_y);
+        assert_ne!(
+            got, PINK,
+            "pack art reached x={x} inside the text window (y={line_y})"
+        );
+    }
+    // Outside the window the pack still covers the scene.
+    let outside = px(&out, 1 * 8 + 1, line_y);
+    assert_eq!(
+        outside, PINK,
+        "the pack should still cover the scene outside the window"
+    );
 }

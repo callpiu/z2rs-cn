@@ -28,7 +28,10 @@ fn layer_background_signature_validation_and_roundtrip() {
     for (key, value) in [
         ("x", serde_json::json!(256)),
         ("y", serde_json::json!(240)),
-        ("page", serde_json::json!(32)),
+        // `page` is a `u8` (`u8::MAX` reserved for "unset"), so 254 is the
+        // last addressable page. The vanilla image has 32; a translated
+        // (MMC5) ROM has 128, which is why the cap is not 32 any more.
+        ("page", serde_json::json!(255)),
         ("tile", serde_json::json!(256)),
         ("colors", serde_json::json!([0, 1, 64])),
         ("colors", serde_json::json!([0, 1])),
@@ -164,10 +167,14 @@ fn sheet_problems_name_the_file() {
 #[test]
 fn ranges_and_paths_are_validated() {
     let sheet = || vec![("sheets/p5.png", one_tile_sheet(0, RED))];
+    // `page` is a `u8` with `u8::MAX` reserved as "unset", so 255 is the first
+    // illegal value. 32 is legal: a translated (MMC5) ROM has 128 CHR pages.
     assert!(matches!(
-        err(&MINIMAL.replace("\"page\":5", "\"page\":32"), sheet()),
-        PackError::Page { got: 32, .. }
+        err(&MINIMAL.replace("\"page\":5", "\"page\":255"), sheet()),
+        PackError::Page { got: 255, .. }
     ));
+    // ...and 32 loads cleanly (it is a real page on a 512 KiB CHR image).
+    assert!(load(&MINIMAL.replace("\"page\":5", "\"page\":32"), sheet()).is_ok());
     let e = err(
         &MINIMAL.replace("\"page\":5", "\"page\":5,\"colors\":[1,2,64]"),
         sheet(),
@@ -671,11 +678,12 @@ fn layers_are_validated_and_resolved() {
         err(&pack(r#"{"file":"../far.png"}"#), art()),
         PackError::Path { .. }
     ));
+    // 255 is the first illegal page (`u8::MAX` means "unset"); 32 is fine.
     assert!(matches!(
         err(
-            &pack(r#"{"file":"l/near.png","depth":"front","over_tiles":[{"page":32,"tile":0}]}"#),
+            &pack(r#"{"file":"l/near.png","depth":"front","over_tiles":[{"page":255,"tile":0}]}"#),
             art()
         ),
-        PackError::Page { got: 32, .. }
+        PackError::Page { got: 255, .. }
     ));
 }

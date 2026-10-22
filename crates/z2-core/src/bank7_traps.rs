@@ -19,30 +19,55 @@
 
 use crate::game::Game;
 
+/// Whether the fixed-bank switcher area belongs to a **translated (MMC5)**
+/// image rather than the original MMC1 one.
+///
+/// A translated image keeps the same CPU addresses for the bank-switch entry
+/// points but the bodies are completely different — `$FFCC` is
+/// `ASL A / ORA #$80 / STA $5115` (write MMC5 `$5115`) instead of the MMC1
+/// `STA $E000` bit-bang. Registering the MMC1 port over that code writes to an
+/// MMC1 register that does not exist here, leaves the MMC5 bank unswitched,
+/// and the CPU then executes whatever happens to be mapped — observed as
+/// `SwapPRG` firing once and the PC walking off into `$A6A1…`.
+///
+/// The test is "does `$FFCC` write `$5115`", i.e. the MMC5 register the
+/// translated ROM's own switcher targets. Synthetic fixtures (all-zero blobs)
+/// do not, so they keep the original behaviour.
+fn uses_mmc5_switcher(game: &Game) -> bool {
+    let off = crate::enh::prg_offset(game, 7, 0xFFCC);
+    // `0A 09 80 8D 15 51` = ASL A / ORA #$80 / STA $5115.
+    game.prg
+        .get(off..off + 6)
+        .is_some_and(|b| b == [0x0A, 0x09, 0x80, 0x8D, 0x15, 0x51])
+}
+
 /// Register every verified bank-7 trap on `game` (idempotent: re-registering
 /// an address replaces the entry with an identical one).
 pub fn register_bank7_traps(game: &mut Game) {
-    // MMC1 serial switchers (bank7_mmc1).
-    game.trap_register(
-        "ConfigureMMC1",
-        Some(7),
-        0xFF9D,
-        crate::bank7_mmc1::configure_mmc1,
-    );
-    game.trap_register("SwapCHR", Some(7), 0xFFB1, crate::bank7_mmc1::swap_chr);
-    game.trap_register(
-        "SwapToPRG0",
-        Some(7),
-        0xFFC5,
-        crate::bank7_mmc1::swap_to_prg0,
-    );
-    game.trap_register(
-        "SwapToSavedPRG",
-        Some(7),
-        0xFFC9,
-        crate::bank7_mmc1::swap_to_saved_prg,
-    );
-    game.trap_register("SwapPRG", Some(7), 0xFFCC, crate::bank7_mmc1::swap_prg);
+    // MMC1 serial switchers (bank7_mmc1). Skipped on a translated (MMC5)
+    // image, whose own code at these addresses already switches banks.
+    if !uses_mmc5_switcher(game) {
+        game.trap_register(
+            "ConfigureMMC1",
+            Some(7),
+            0xFF9D,
+            crate::bank7_mmc1::configure_mmc1,
+        );
+        game.trap_register("SwapCHR", Some(7), 0xFFB1, crate::bank7_mmc1::swap_chr);
+        game.trap_register(
+            "SwapToPRG0",
+            Some(7),
+            0xFFC5,
+            crate::bank7_mmc1::swap_to_prg0,
+        );
+        game.trap_register(
+            "SwapToSavedPRG",
+            Some(7),
+            0xFFC9,
+            crate::bank7_mmc1::swap_to_saved_prg,
+        );
+        game.trap_register("SwapPRG", Some(7), 0xFFCC, crate::bank7_mmc1::swap_prg);
+    }
     // Controller input (bank7_input).
     game.trap_register(
         "Controllers_Input",

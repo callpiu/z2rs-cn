@@ -195,12 +195,13 @@ fn compose_cost_per_frame() {
                         vroom: 0,
                     }),
                     time: None,
+                    text_rect: None,
                 };
                 // Warm up caches, then time.
-                c.compose(input, &mut out).unwrap();
+                c.compose(input.clone(), &mut out).unwrap();
                 let t0 = Instant::now();
                 for _ in 0..FRAMES {
-                    c.compose(input, &mut out).unwrap();
+                    c.compose(input.clone(), &mut out).unwrap();
                 }
                 let ms = t0.elapsed().as_secs_f64() * 1000.0 / f64::from(FRAMES);
                 println!(

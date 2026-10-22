@@ -70,6 +70,9 @@ pub struct Presenter {
     pack: Option<HdPack>,
     palette: MasterPalette,
     scene: Option<SceneView>,
+    /// Rows whose HD art is suppressed this frame (the game is drawing text;
+    /// see [`ComposeInput::text_rows`]).
+    text_rect: Option<crate::TextRect>,
     rgba: Vec<u8>,
 }
 
@@ -93,6 +96,7 @@ impl Presenter {
             pack: None,
             palette: MasterPalette::NES,
             scene: None,
+            text_rect: None,
             cfg,
         };
         me.resize_buffers();
@@ -245,6 +249,17 @@ impl Presenter {
         self.pack.as_ref().is_some_and(|p| !p.layers().is_empty())
     }
 
+    /// Suppress HD art on `rows` for the frames that follow (`None` = no text).
+    ///
+    /// A translated ROM re-uses original terrain `(page, tile)` numbers for its
+    /// Chinese glyphs, so painting HD terrain over a dialogue box turns it into
+    /// scenery fragments. Only the box's own rows are dropped, so the rest of
+    /// the screen keeps its HD look. Callers pass [`crate::SceneView`]-style
+    /// row ranges from the game's dialogue/menu state.
+    pub fn set_text_rect(&mut self, rect: Option<crate::TextRect>) {
+        self.text_rect = rect;
+    }
+
     /// Configuration in force.
     #[must_use]
     pub fn config(&self) -> PresentConfig {
@@ -340,6 +355,7 @@ impl Presenter {
                 palette: &palette,
                 scene: self.scene,
                 time: self.time,
+                text_rect: self.text_rect,
             },
             &mut self.rgba,
         )?;

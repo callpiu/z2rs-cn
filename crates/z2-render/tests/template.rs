@@ -120,12 +120,82 @@ fn template_errors() {
         template_from_chr(&chr, &opts(&[], 1)),
         Err(TemplateError::NoPages)
     );
+    // A page number is accepted up to `MAX_CHR_PAGES - 1`; whether the CHR
+    // image actually has it is checked separately (`ChrTooShort`). 32 is a
+    // real page on a translated (MMC5) ROM's 512 KiB CHR image.
     assert_eq!(
-        template_from_chr(&chr, &opts(&[32], 1)),
-        Err(TemplateError::Page(32))
+        template_from_chr(&chr, &opts(&[255], 1)),
+        Err(TemplateError::Page(255))
     );
     assert_eq!(
         template_from_chr(&chr, &opts(&[1], 1)),
         Err(TemplateError::ChrTooShort { page: 1, len: 4096 })
     );
+    // Page 32 is in range but this 2-page fixture does not hold it.
+    assert_eq!(
+        template_from_chr(&chr, &opts(&[32], 1)),
+        Err(TemplateError::ChrTooShort {
+            page: 32,
+            len: chr.len()
+        })
+    );
+}
+
+/// A translated (MMC5) ROM has a 512 KiB CHR image = 128 pages, and its
+/// Chinese glyphs live in pages 32-127. Both the template generator and the
+/// pack loader used to cap at 32, so HD art for those glyphs was either
+/// rejected outright or silently dropped at lookup time.
+#[test]
+fn high_pages_of_a_512k_image_are_addressable() {
+    // 128 pages x 4 KiB = 512 KiB, the translated ROM's CHR size.
+    let chr = synthetic_chr(128);
+    assert_eq!(chr.len(), 512 * 1024);
+
+    // Templates can be generated for the glyph pages.
+    let pages = [32u8, 64, 127];
+    let out = template_from_chr(&chr, &opts(&pages, 1)).unwrap();
+    assert_eq!(out.sheets.len(), 3);
+    let pack = HdPack::from_files(&out.into_files()).unwrap();
+
+    // ...and the pack resolves them (this is the lookup that used to return
+    // `None` and fall back to the original art).
+    for &page in &pages {
+        let resolved = (0..8u8).any(|t| pack.lookup(page, t, [0x0F, 0x16, 0x30]).is_some());
+        assert!(resolved, "page {page} resolved no tiles at all");
+    }
+    // A page just past the image is in range but empty — except through the
+    // traditional-page fallback, which maps it to page 64 (see below).
+    assert!(
+        pack.lookup(200, 0, [0x0F, 0x16, 0x30]).is_none(),
+        "page 200 has no cell and no simplified counterpart 64 pages below"
+    );
+}
+
+/// The translated ROM's simplified/traditional switch shifts every CHR page by
+/// `+64` without changing the artwork, so a pack built for the simplified
+/// layout must still resolve the traditional pages.
+///
+/// Regression test: before the fallback, switching to traditional moved the
+/// glyph pages from 26 to 90 and the terrain from 3 to 67, and **every** HD
+/// lookup missed (0% coverage instead of 63%).
+#[test]
+fn traditional_pages_fall_back_to_simplified_art() {
+    let chr = synthetic_chr(128);
+    // Only the simplified pages get HD art.
+    let pages = [0u8, 3, 26];
+    let out = template_from_chr(&chr, &opts(&pages, 1)).unwrap();
+    let pack = HdPack::from_files(&out.into_files()).unwrap();
+    let cols = [0x0F, 0x16, 0x30];
+
+    for &page in &pages {
+        let direct = (0..8u8).any(|t| pack.lookup(page, t, cols).is_some());
+        assert!(direct, "simplified page {page} should resolve");
+
+        let trad = page + 64;
+        let via_fallback = (0..8u8).any(|t| pack.lookup(trad, t, cols).is_some());
+        assert!(
+            via_fallback,
+            "traditional page {trad} (simplified {page} + 64) resolved nothing"
+        );
+    }
 }

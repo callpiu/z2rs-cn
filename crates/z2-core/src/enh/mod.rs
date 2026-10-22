@@ -630,6 +630,9 @@ pub fn patch_prg(game: &mut Game, offset: usize, bytes: &[u8]) -> bool {
 /// which is the last bank of the image: bank 7 in the vanilla 128 KiB
 /// layout, bank 15 in the 256 KiB layout the `z2-rando` ROM randomizer may
 /// expand to (banks 0-6 do not move).
+///
+/// Assumes the **original MMC1** layout. Mapper-aware code should use
+/// [`prg_offset`], which also handles the translated MMC5 image.
 #[must_use]
 pub const fn bank_offset(prg_len: usize, bank: u8, cpu_addr: u16) -> usize {
     let bank = if bank == 7 && prg_len > 8 * 0x4000 {
@@ -640,11 +643,50 @@ pub const fn bank_offset(prg_len: usize, bank: u8, cpu_addr: u16) -> usize {
     bank * 0x4000 + (cpu_addr & 0x3FFF) as usize
 }
 
+/// Offset of `bank`:`cpu_addr` in `game.prg`, for this ROM's mapper.
+///
+/// The enhancement patches are authored against the original cartridge's
+/// **16 KiB** bank numbering (`bank 7` = the fixed `$C000-$FFFF` window). The
+/// translated (MMC5) image keeps that numbering in the ROM's own code but
+/// banks the file in 8 KiB units, only the last 8 KiB being fixed:
+///
+/// * `$C000-$DFFF` lives in 8 KiB banks `2n`/`2n+1` of 16 KiB index `n`;
+/// * `$E000-$FFFF` is the last 8 KiB of the file, whatever the index.
+///
+/// Getting this wrong makes every patch land on the wrong bytes — the byte
+/// guards then silently skip the patch, which looks exactly like "the option
+/// does nothing".
+#[must_use]
+pub fn prg_offset(game: &Game, bank: u8, cpu_addr: u16) -> usize {
+    let len = game.prg.len();
+    match game.mapper {
+        crate::game::MapperKind::Mmc1 => bank_offset(len, bank, cpu_addr),
+        crate::game::MapperKind::Mmc5 => {
+            const B8: usize = 0x2000;
+            const LAST16: usize = 0x4000;
+            match cpu_addr {
+                // `$E000-$FFFF`: the fixed last 8 KiB.
+                0xE000..=0xFFFF => len.saturating_sub(B8) + usize::from(cpu_addr - 0xE000),
+                // `$C000-$DFFF`: the top half of the 16 KiB "fixed" bank,
+                // i.e. the 8 KiB bank just before the last one.
+                0xC000..=0xDFFF => match len.checked_sub(LAST16) {
+                    Some(base) => base + B8 + usize::from(cpu_addr - 0xC000),
+                    None => len.saturating_sub(B8) + usize::from(cpu_addr - 0xE000),
+                },
+                // Switchable windows: 16 KiB index `bank` -> the 8 KiB pair
+                // `2*bank` / `2*bank+1`. The offset inside the 16 KiB window
+                // is `cpu_addr - $8000` (NOT `cpu_addr & $1FFF`, which would
+                // fold `$A000-$BFFF` onto `$8000-$9FFF`).
+                _ => usize::from(bank) * 2 * B8 + usize::from(cpu_addr.wrapping_sub(0x8000)),
+            }
+        }
+    }
+}
+
 /// [`patch_prg`] by 16 KiB `bank` and CPU address (`$8000-$BFFF` for a
-/// switchable bank, `$C000-$FFFF` for the fixed bank 7; see
-/// [`bank_offset`]).
+/// switchable bank, `$C000-$FFFF` for the fixed bank 7; see [`prg_offset`]).
 pub fn patch_prg_at(game: &mut Game, bank: u8, cpu_addr: u16, bytes: &[u8]) -> bool {
-    let offset = bank_offset(game.prg.len(), bank, cpu_addr);
+    let offset = prg_offset(game, bank, cpu_addr);
     patch_prg(game, offset, bytes)
 }
 

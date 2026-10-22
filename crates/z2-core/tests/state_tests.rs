@@ -476,7 +476,8 @@ fn enh_state_round_trips_and_version_2_images_still_load() {
 
     // Rebuild the same image as version 2 wrote it: cut the length-prefixed
     // enhancement blob (it starts with `frames`, the first byte that differs
-    // from the plain image) and patch the version.
+    // from the plain image) and patch the version. Version 2 also predates the
+    // MMC5 block (version 4), so the trailing presence byte goes too.
     let first = plain
         .iter()
         .zip(&bytes)
@@ -486,6 +487,7 @@ fn enh_state_round_trips_and_version_2_images_still_load() {
     let len = usize::from(u16::from_le_bytes([bytes[at], bytes[at + 1]]));
     let mut v2 = bytes.clone();
     v2.drain(at..at + 2 + len);
+    v2.pop(); // the MMC5 presence byte, written only by version >= 4
     v2[4..6].copy_from_slice(&2u16.to_le_bytes());
     let old = GameState::from_bytes(&v2).expect("version 2 still decodes");
     let mut c = synth_game();

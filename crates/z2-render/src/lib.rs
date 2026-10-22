@@ -48,6 +48,7 @@ pub mod template;
 
 pub use actors::{ActorClipEntry, ActorFrameEntry, ActorInput};
 pub use chr::{paint_page_sheet, tile_subpixels, CHR_PAGES, CHR_PAGE_LEN, TILES_PER_PAGE};
+pub use z2_ppu::TextRect;
 pub use compositor::{
     bg_colors, sprite_art, sprite_colors, text_box_span, ComposeError, ComposeInput, Compositor,
     IndexedView, SpriteArt, SpriteTint, TEXT_BOX_BORDER_TILES,

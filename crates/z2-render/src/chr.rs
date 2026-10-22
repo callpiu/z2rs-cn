@@ -11,10 +11,29 @@ use crate::png_io::RgbaImage;
 
 /// Bytes per CHR page.
 pub const CHR_PAGE_LEN: usize = 4096;
-/// Pages in the Zelda II CHR image (128 KiB).
+/// Pages in the **vanilla** Zelda II CHR image (128 KiB).
+///
+/// This is the layout HD packs are authored against, so it stays the default
+/// for pack validation and template generation.
+///
+/// A translated (MMC5) ROM has a 512 KiB CHR image = 128 pages, and its
+/// Chinese glyphs live in pages 32-127. `Pack::lookup` indexes
+/// `page * 256 + tile`, so a pack built against this constant alone can never
+/// address them. See [`MAX_CHR_PAGES`] for the addressing limit.
 pub const CHR_PAGES: usize = 32;
+/// Most CHR pages a `page` byte can index (the record field is `u8` and
+/// `u8::MAX` is reserved as "unset"). Packs may address any page below this;
+/// whether the ROM actually has it is checked against the CHR image.
+pub const MAX_CHR_PAGES: usize = 254;
 /// Tiles per page.
 pub const TILES_PER_PAGE: usize = 256;
+/// How far the translated ROM's simplified/traditional switch moves every CHR
+/// page: `$5130` bits 1-0 add `+256` 1 KiB banks = `+64` 4 KiB pages.
+///
+/// The *artwork* does not change, only its page number, so an HD pack built
+/// against the simplified layout still describes the traditional one at
+/// `page - TRADITIONAL_PAGE_OFFSET`.
+pub const TRADITIONAL_PAGE_OFFSET: u8 = 64;
 
 /// Borrow page `page` from a CHR image, if it is fully present.
 #[must_use]

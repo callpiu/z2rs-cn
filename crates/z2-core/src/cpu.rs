@@ -640,7 +640,10 @@ pub(crate) fn bus_write(game: &mut Game, addr: u16, val: u8) {
         0x4020..=0x5FFF => {
             if game.mapper == crate::game::MapperKind::Mmc5 {
                 let changed = game.mmc5.write(addr, val);
-                if changed && (0x5120..=0x5130).contains(&addr) {
+                // `$5120-$5130` = CHR banks (incl. the `$5130` high bits the
+                // simplified/traditional switch uses); `$5105` = nametable
+                // mirroring. Both feed the PPU, so both must re-sync.
+                if changed && ((0x5120..=0x5130).contains(&addr) || addr == 0x5105) {
                     let cycles = game.cpu.cycles + BUS_ACCESS_OFFSET;
                     game.ppu.mapper_sync_mmc5(&game.chr, &game.mmc5, cycles);
                 }

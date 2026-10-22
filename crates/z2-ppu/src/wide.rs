@@ -185,6 +185,59 @@ impl Default for Margins {
     }
 }
 
+/// A rectangle of the 256x240 screen whose HD art must be suppressed because
+/// the game is drawing text there.
+///
+/// A translated (MMC5) ROM re-uses the original terrain's `(page, tile)`
+/// numbers for its Chinese glyphs, so HD art painted over a text window shows
+/// scenery fragments instead of letters.
+///
+/// Coordinates are in NES pixels: `x0..x1` across, `y0..y1` down, half-open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextRect {
+    /// Left edge (inclusive).
+    pub x0: usize,
+    /// Right edge (exclusive).
+    pub x1: usize,
+    /// Top edge (inclusive).
+    pub y0: usize,
+    /// Bottom edge (exclusive).
+    pub y1: usize,
+}
+
+impl TextRect {
+    /// The whole screen (title, name entry, save menus).
+    pub const FULL: Self = Self {
+        x0: 0,
+        x1: WIDTH,
+        y0: 0,
+        y1: HEIGHT,
+    };
+
+    /// A rectangle from NES pixel bounds, clamped to the screen.
+    #[must_use]
+    pub fn new(x0: usize, x1: usize, y0: usize, y1: usize) -> Self {
+        Self {
+            x0: x0.min(WIDTH),
+            x1: x1.min(WIDTH),
+            y0: y0.min(HEIGHT),
+            y1: y1.min(HEIGHT),
+        }
+    }
+
+    /// Whether screen pixel (`x`, `y`) is inside.
+    #[must_use]
+    pub fn contains(&self, x: usize, y: usize) -> bool {
+        (self.x0..self.x1).contains(&x) && (self.y0..self.y1).contains(&y)
+    }
+
+    /// Whether row `y` overlaps at all (cheap per-line test).
+    #[must_use]
+    pub fn covers_row(&self, y: usize) -> bool {
+        (self.y0..self.y1).contains(&y)
+    }
+}
+
 /// Wide indexed frame (`width x height`, NES palette indices, row-major).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WideFrame {
@@ -572,7 +625,17 @@ pub fn margin_sprite_on_line(rec: &LineRecord, y: usize, s: &MarginSprite) -> Op
             r as u8,
         )
     };
-    let page = rec.chr_page[table];
+    // Sprites read the *sprite* page. On a mapper that splits the two CHR sets
+    // (MMC5) `chr_page` holds the background pages, so using it here drew the
+    // margin sprites out of the wrong 4 KiB page.
+    //
+    // A record that never fills `sprite_page` (MMC1, and any caller that only
+    // sets `chr_page`) leaves it at `NO_PAGE`; fall back to the background page
+    // there so the unsplit path behaves exactly as before.
+    let page = match rec.sprite_page[table] {
+        NO_PAGE => rec.chr_page[table],
+        page => page,
+    };
     if page == NO_PAGE {
         return None;
     }
@@ -1335,7 +1398,10 @@ mod tests {
     #[test]
     fn margin_sprite_row_expansion_8x8_and_8x16() {
         let mut l = record_line(0);
+        // Sprite fetches read `sprite_page`; when the mapper does not split the
+        // two CHR sets it equals `chr_page`, which is what these fixtures model.
         l.chr_page = [1, 2];
+        l.sprite_page = [1, 2];
         // 8x8, sprite table 1 (page 2): top row is y + 1.
         l.ctrl = PPUCTRL_SPRITE_TABLE;
         let s = msprite(-20, 9, 0x44, 0x03);
@@ -1379,10 +1445,37 @@ mod tests {
         // V-flipped 8x16: the first line shows the bottom half's last row.
         let r = margin_sprite_on_line(&l, 100, &msprite(300, 99, 0x44, 0x80)).unwrap();
         assert_eq!((r.page, r.tile, r.fine_row), (1, 0x45, 7));
-        // Y $FF never reaches a line; no CHR page -> nothing.
+        // Y $FF never reaches a line; no CHR page -> nothing. `sprite_page`
+        // alone is not enough now: an unfilled sprite page falls back to the
+        // background page, so "nothing to draw from" means both are `NO_PAGE`.
         assert_eq!(margin_sprite_on_line(&l, 0, &msprite(0, 0xFF, 0, 0)), None);
+        l.sprite_page = [NO_PAGE; 2];
         l.chr_page = [NO_PAGE; 2];
         assert_eq!(margin_sprite_on_line(&l, 100, &s), None);
+    }
+
+    /// Margin sprites must sample the **sprite** CHR page, not the background
+    /// one. MMC5 in 8x16-sprite mode gives the two sets different banks; using
+    /// `chr_page` (background) here drew the translated ROM's margin enemies
+    /// out of the Chinese *text* pages — glyph fragments along the edges.
+    #[test]
+    fn margin_sprites_use_the_sprite_page_not_the_background_page() {
+        let mut l = record_line(0);
+        l.ctrl = 0; // sprite table 0
+        l.chr_page = [9, 9]; // background pages: deliberately "wrong" here
+        l.sprite_page = [3, 4]; // what sprites actually read
+        let s = msprite(300, 9, 0x44, 0x00);
+        let r = margin_sprite_on_line(&l, 10, &s).expect("row 1 is inside");
+        assert_eq!(
+            r.page, 3,
+            "margin sprite took page {} (background) instead of the sprite page",
+            r.page
+        );
+        // Table 1 -> the second entry.
+        l.ctrl = PPUCTRL_SPRITE_TABLE;
+        let s = msprite(300, 9, 0x45, 0x00);
+        let r = margin_sprite_on_line(&l, 10, &s).expect("row 1 is inside");
+        assert_eq!(r.page, 4, "sprite table 1 should read sprite_page[1]");
     }
 
     /// Line 11 shows sprites (8x8, table 0 = page 2) over margins of tile 5
@@ -1392,6 +1485,7 @@ mod tests {
         let mut l = record_line(0);
         l.mask |= PPUMASK_SHOW_SPRITES | PPUMASK_SHOW_LEFT_SPRITES | PPUMASK_SHOW_LEFT_BG;
         l.chr_page = [2, 2];
+        l.sprite_page = [2, 2];
         rec.lines[11] = l;
         let mut m = Margins::new(2);
         m.lines[11].fill = MarginFill::Tiles;

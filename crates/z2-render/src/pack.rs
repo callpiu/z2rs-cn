@@ -35,7 +35,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::chr::{CHR_PAGES, TILES_PER_PAGE};
+use crate::chr::{MAX_CHR_PAGES, TILES_PER_PAGE, TRADITIONAL_PAGE_OFFSET};
 use crate::palette::MasterPalette;
 use crate::png_io::{decode_png_rgba, PngError, RgbaImage};
 use crate::MAX_SCALE;
@@ -373,7 +373,7 @@ impl fmt::Display for PackError {
             E::Page { entry, got } => write!(
                 f,
                 "pack.json {entry}: page {got} out of range (0..={})",
-                CHR_PAGES - 1
+                MAX_CHR_PAGES - 1
             ),
             E::Tile { entry, got } => {
                 write!(f, "pack.json {entry}: tile {got} out of range (0..=255)")
@@ -533,9 +533,20 @@ impl Layer {
     }
 
     /// Whether a front layer may cover background tile `(page, tile)`.
+    ///
+    /// Like [`HdPack::lookup`], this falls back to `page - 64` for the
+    /// translated ROM's traditional layout: its switch shifts every CHR page by
+    /// `+64` without changing the artwork, so a layer written against the
+    /// simplified page must still match. Missing that fallback dropped the HD
+    /// ground entirely once the game was in traditional mode (observed:
+    /// `over_tiles: page 7` vs the scene's `page 0x47`).
     #[must_use]
     pub fn covers_tile(&self, page: u8, tile: u8) -> bool {
-        self.over_tiles.is_empty() || self.over_tiles.binary_search(&(page, tile)).is_ok()
+        if self.over_tiles.is_empty() || self.over_tiles.binary_search(&(page, tile)).is_ok() {
+            return true;
+        }
+        page.checked_sub(TRADITIONAL_PAGE_OFFSET)
+            .is_some_and(|p| self.over_tiles.binary_search(&(p, tile)).is_ok())
     }
 }
 
@@ -612,7 +623,7 @@ pub struct HdPack {
     alpha_threshold: u8,
     sheets: Vec<RgbaImage>,
     sheet_files: Vec<String>,
-    /// `page * 256 + tile`, `CHR_PAGES * 256` entries.
+    /// `page * 256 + tile`, `MAX_CHR_PAGES * 256` entries.
     index: Vec<TileSlot>,
     palette: Option<MasterPalette>,
     groups: Option<serde_json::Value>,
@@ -1095,7 +1106,11 @@ impl HdPack {
             });
         }
 
-        let mut index = vec![TileSlot::default(); CHR_PAGES * TILES_PER_PAGE];
+        // Address every page a `page` byte can name, not just the vanilla 32:
+        // a translated (MMC5) ROM has a 512 KiB CHR image (128 pages) and its
+        // Chinese glyphs live in pages 32-127, which a 32-page index silently
+        // dropped (the lookup fell through to the original art).
+        let mut index = vec![TileSlot::default(); MAX_CHR_PAGES * TILES_PER_PAGE];
         let (mut tile_count, mut variant_count) = (0, 0);
         let mut max_bleed_v = 0u8;
         // BTreeMap order: None before Some, variants ascending -> already sorted.
@@ -1252,9 +1267,26 @@ impl HdPack {
 
     /// Resolve a tile drawn with sub-palette colours `colors` (entries 1..=3):
     /// the exact variant first, then the default, else `None` (use CHR art).
+    ///
+    /// Falls back to `page - [`TRADITIONAL_PAGE_OFFSET`]` when the page itself
+    /// has no cell. The translated ROM's simplified/traditional switch shifts
+    /// every CHR bank by +256 KiB (= +64 4 KiB pages) without changing the
+    /// artwork, so the traditional glyphs and the traditional *terrain* live
+    /// 64 pages above where an HD pack indexed the original art. Without the
+    /// fallback, switching to traditional silently dropped all HD coverage.
     #[inline]
     #[must_use]
     pub fn lookup(&self, page: u8, tile: u8, colors: [u8; 3]) -> Option<CellRef> {
+        self.lookup_exact(page, tile, colors).or_else(|| {
+            page.checked_sub(TRADITIONAL_PAGE_OFFSET)
+                .and_then(|p| self.lookup_exact(p, tile, colors))
+        })
+    }
+
+    /// [`HdPack::lookup`] without the traditional-page fallback.
+    #[inline]
+    #[must_use]
+    fn lookup_exact(&self, page: u8, tile: u8, colors: [u8; 3]) -> Option<CellRef> {
         let slot = self
             .index
             .get(usize::from(page) * TILES_PER_PAGE + usize::from(tile))?;
@@ -1271,22 +1303,28 @@ impl HdPack {
     #[inline]
     #[must_use]
     pub fn lookup_variant(&self, page: u8, tile: u8, colors: [u8; 3]) -> Option<CellRef> {
-        let slot = self
-            .index
-            .get(usize::from(page) * TILES_PER_PAGE + usize::from(tile))?;
-        let key = colors.map(|c| c & 0x3F);
-        slot.variants
-            .binary_search_by(|(c, _)| c.cmp(&key))
-            .ok()
-            .map(|i| slot.variants[i].1)
+        let at = |p: u8| {
+            let slot = self
+                .index
+                .get(usize::from(p) * TILES_PER_PAGE + usize::from(tile))?;
+            let key = colors.map(|c| c & 0x3F);
+            slot.variants
+                .binary_search_by(|(c, _)| c.cmp(&key))
+                .ok()
+                .map(|i| slot.variants[i].1)
+        };
+        at(page).or_else(|| page.checked_sub(TRADITIONAL_PAGE_OFFSET).and_then(at))
     }
 
     /// The palette-independent cell only.
     #[must_use]
     pub fn lookup_default(&self, page: u8, tile: u8) -> Option<CellRef> {
-        self.index
-            .get(usize::from(page) * TILES_PER_PAGE + usize::from(tile))?
-            .default
+        let at = |p: u8| {
+            self.index
+                .get(usize::from(p) * TILES_PER_PAGE + usize::from(tile))?
+                .default
+        };
+        at(page).or_else(|| page.checked_sub(TRADITIONAL_PAGE_OFFSET).and_then(at))
     }
 
     /// Pixels of a cell returned by [`HdPack::lookup`].
@@ -1324,10 +1362,16 @@ fn register(reg: &mut Registry, key: RegKey, cref: CellRef, src: String) -> Resu
     Ok(())
 }
 
+/// Validate a `page` field from `pack.json`.
+///
+/// Accepts any page a `u8` can address below [`MAX_CHR_PAGES`], not just the
+/// vanilla 32: a translated (MMC5) ROM has 128 CHR pages and its Chinese
+/// glyphs are in pages 32-127, so a 32-page cap would reject exactly the
+/// entries such a pack needs.
 fn check_page(p: u64, entry: &str) -> Result<u8, PackError> {
     u8::try_from(p)
         .ok()
-        .filter(|p| usize::from(*p) < CHR_PAGES)
+        .filter(|p| usize::from(*p) < MAX_CHR_PAGES)
         .ok_or_else(|| PackError::Page {
             entry: entry.to_string(),
             got: p,

@@ -119,11 +119,6 @@ pub struct PpuBind {
     /// `None` forces the first sync (power-on banks must load even though
     /// they read `0`).
     mapper_key: Option<u64>,
-    /// Every `$2007` write since the last drain, as `(vram address, value)`,
-    /// newest last. The dialog text hook (`z2-native`'s `--export-text`)
-    /// rebuilds the box text from it. Bounded: a dropped write costs one
-    /// letter, and the hook never runs when nobody reads it.
-    pub text_writes: VecDeque<(u16, u8)>,
     /// Sprite-0 hit observed by the last [`PpuBind::render_frame`] (the
     /// beam's answer for that frame). The model flag itself is cleared by
     /// [`Ppu::begin_frame`](z2_ppu::Ppu::begin_frame) mid-tail (pre-render
@@ -290,22 +285,73 @@ impl PpuBind {
     /// Frame-end MMC5 CHR re-sync (no beam advance: the caller already
     /// positioned the beam at the frame end).
     pub fn sync_from_mapper_mmc5(&mut self, chr_rom: &[u8], mmc5: &Mmc5) {
+        self.apply_mmc5(chr_rom, mmc5);
+    }
+
+    /// Apply every mapper-visible PPU input MMC5 owns: the two 4 KiB CHR
+    /// slots **and** the `$5105` nametable mapping.
+    ///
+    /// # Why mirroring has to be applied here
+    ///
+    /// `$5105` assigns each logical screen its own source, and the
+    /// translated ROM writes `$44` (A, A, B, B — horizontal) at boot. The
+    /// PPU model defaults to *vertical*, and nothing on the MMC5 path ever
+    /// called `set_mirroring` (only `sync_from_mapper`, the MMC1 path, did).
+    /// The result was scenes reading tiles out of the wrong nametable —
+    /// visible as scrambled backgrounds in some rooms.
+    fn apply_mmc5(&mut self, chr_rom: &[u8], mmc5: &Mmc5) {
         let mut key = 0x8000_0000_0000_0000u64 | u64::from(mmc5.chr_mode);
         for (i, b) in mmc5.chr_banks.iter().enumerate() {
             key |= u64::from(*b) << (4 + i * 6);
         }
+        // `$5128-$512B` are four 8-bit bank registers now, so fold each in as
+        // a full byte instead of 2-bit fields (which used to overlap bit 60).
         for (i, b) in mmc5.chr_upper.iter().enumerate() {
-            key |= u64::from(*b) << (52 + i * 2);
+            key ^= u64::from(*b).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (i * 8);
         }
-        key |= u64::from(mmc5.chr_upper2 & 3) << 60;
+        // `$5130` bits 1-0: the simplified/traditional switch. It shifts the
+        // whole CHR window by +256 1 KiB banks, so this must invalidate.
+        key ^= u64::from(mmc5.chr_upper2 & 3) << 62;
+        // `$5105` mirroring is part of the same cache key.
+        key ^= u64::from(mmc5.nt_map) << 48;
         if self.mapper_key == Some(key) {
             return;
         }
         self.mapper_key = Some(key);
+        self.ppu
+            .set_mirroring(z2_ppu::Mirroring::from_mmc5_nt_map(mmc5.nt_map));
+        // Sprite pattern tables: the "A" set (`$5120-$5127`).
         for page in 0u8..2 {
             let data = mmc5.chr_slot_4k(chr_rom, page);
-            let bank = (mmc5.chr_bank_1k(usize::from(page) * 4) & 0xFF) as u8;
-            let _ = self.ppu.load_chr_4k(usize::from(page), bank, &data);
+            // `record.page` is a **4 KiB page number** (the PPU record and the
+            // widescreen/HD decoders index CHR as `page * 4096`), but MMC5
+            // banks are 1 KiB. Store the page of the slot's *first* 1 KiB
+            // bank, i.e. `1k_bank / 4`.
+            let page_no = (mmc5.chr_bank_1k(usize::from(page) * 4) / 4) as u8;
+            let _ = self.ppu.load_chr_4k(usize::from(page), page_no, &data);
+        }
+        // Background pattern tables: the "B" set (`$5128-$512B`), which MMC5
+        // only splits from the A set in CHR mode 3 with 8x16 sprites.
+        //
+        // Verified against the original ROM: in the field/town scenes
+        // (`$0736=$0B`, `$0707=0`) the translated image maps
+        // A = `[8,9,10,11,12,13,14,15]` and B = `[12,13,14,15]`, i.e. the two
+        // sets select *different* 4 KiB pages. Drawing the background from the
+        // A set (what this used to do) is what filled the widescreen margins
+        // with the wrong tiles.
+        //
+        // `record` keeps one page per *table* pair, and it is the background
+        // that the margin decoder samples, so the page it sees must be the B
+        // set's.
+        if mmc5.chr_sets_differ() {
+            for page in 0u8..2 {
+                let data = mmc5.chr_bg_slot_4k(chr_rom, page);
+                let page_no =
+                    (mmc5.chr_bank_1k_ex(usize::from(page) * 4, false) / 4) as u8;
+                let _ = self.ppu.load_chr_4k_bg(usize::from(page), page_no, &data);
+            }
+        } else {
+            self.ppu.clear_chr_bg();
         }
     }
 
@@ -316,24 +362,22 @@ impl PpuBind {
     /// write lands, so mid-frame bank switches take effect on the beam's
     /// current scanline just like the MMC1 path.
     pub fn mapper_sync_mmc5(&mut self, chr_rom: &[u8], mmc5: &Mmc5, cycles: u64) {
+        // Cheap check before touching the beam: `apply_mmc5` owns the key.
         let mut key = 0x8000_0000_0000_0000u64 | u64::from(mmc5.chr_mode);
         for (i, b) in mmc5.chr_banks.iter().enumerate() {
             key |= u64::from(*b) << (4 + i * 6);
         }
         for (i, b) in mmc5.chr_upper.iter().enumerate() {
-            key |= u64::from(*b) << (52 + i * 2);
+            key ^= u64::from(*b).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (i * 8);
         }
-        key |= u64::from(mmc5.chr_upper2 & 3) << 60;
+        key ^= u64::from(mmc5.chr_upper2 & 3) << 62;
+        key ^= u64::from(mmc5.nt_map) << 48;
         if self.mapper_key == Some(key) {
             return;
         }
-        self.mapper_key = Some(key);
+        // CHR/nametable changes take effect from the beam's current scanline.
         self.sync_access(cycles, AccessKind::Fetch);
-        for page in 0u8..2 {
-            let data = mmc5.chr_slot_4k(chr_rom, page);
-            let bank = (mmc5.chr_bank_1k(usize::from(page) * 4) & 0xFF) as u8;
-            let _ = self.ppu.load_chr_4k(usize::from(page), bank, &data);
-        }
+        self.apply_mmc5(chr_rom, mmc5);
     }
 
     /// Finish the frame at its end (line 239 done): renders every scanline

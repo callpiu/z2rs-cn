@@ -449,8 +449,17 @@ pub fn hash(st: &WideGameplayState) -> u64 {
 
 /// Whether bank 0 is mapped at `$8000` (the trap table is keyed by address
 /// only, so a bank-0 trap must decline in every other bank).
+///
+/// Must ask whichever mapper the ROM actually uses: reading `mmc1` on a
+/// translated (MMC5) image returns the unused power-on default, which would
+/// make every bank-0 hook run in the wrong bank.
 fn bank0_mapped(game: &Game) -> bool {
-    game.mmc1.map_prg(ADDR_SPAWN, game.prg.len()) < 0x4000
+    let len = game.prg.len();
+    let idx = match game.mapper {
+        crate::game::MapperKind::Mmc1 => game.mmc1.map_prg(ADDR_SPAWN, len),
+        crate::game::MapperKind::Mmc5 => game.mmc5.map_prg(ADDR_SPAWN, len),
+    };
+    idx < 0x4000
 }
 
 /// Run the ROM bytes at `target` inside the frame the dispatcher is about to
@@ -1104,7 +1113,12 @@ fn blob_live(game: &mut Game, s: usize, frame_sp: u8) -> Live {
 /// [`bank0_mapped`]).
 fn rom_table(game: &Game, base: u16, idx: u8) -> u8 {
     let addr = base.wrapping_add(u16::from(idx));
-    game.prg[game.mmc1.map_prg(addr, game.prg.len())]
+    let len = game.prg.len();
+    let off = match game.mapper {
+        crate::game::MapperKind::Mmc1 => game.mmc1.map_prg(addr, len),
+        crate::game::MapperKind::Mmc5 => game.mmc5.map_prg(addr, len),
+    };
+    game.prg[off]
 }
 
 /// `$83CF-$83FA`: a blob touched Link — set up the encounter and leave the

@@ -270,13 +270,17 @@ fn fixed_offset(game: &Game, addr: u16) -> Option<usize> {
     if len < 0x4000 {
         return None;
     }
-    Some(len - 0x4000 + usize::from(addr & 0x3FFF))
+    Some(super::prg_offset(game, 7, addr))
 }
 
 /// Whether bank 0 is mapped at `$8000` (bank 0 hooks decline otherwise).
 fn bank0_mapped(game: &Game) -> bool {
     let len = game.prg.len();
-    len >= 0x4000 && len.is_multiple_of(0x4000) && game.mmc1.map_prg(0x8000, len) < 0x4000
+    let idx = match game.mapper {
+        crate::game::MapperKind::Mmc1 => game.mmc1.map_prg(0x8000, len),
+        crate::game::MapperKind::Mmc5 => game.mmc5.map_prg(0x8000, len),
+    };
+    idx < 0x4000
 }
 
 /// Byte of bank 0 at CPU address `addr` (`$8000-$BFFF`).

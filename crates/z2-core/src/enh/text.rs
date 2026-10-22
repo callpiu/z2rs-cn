@@ -159,8 +159,7 @@ pub fn encode_text(s: &str) -> Vec<u8> {
 
 /// Read the byte at `bank`:`cpu_addr` of the in-memory PRG, if in range.
 fn prg_byte(game: &Game, bank: u8, cpu_addr: u16) -> Option<u8> {
-    let off = usize::from(bank) * 0x4000 + usize::from(cpu_addr & 0x3FFF);
-    game.prg.get(off).copied()
+    game.prg.get(super::prg_offset(game, bank, cpu_addr)).copied()
 }
 
 /// Install this group's hooks ([`super::apply`], only when active).

@@ -297,8 +297,10 @@ pub(crate) fn render_sprites(
                 });
             }
         }
-        let lo = ppu.chr_byte(table, tile, fine_row, false);
-        let hi = ppu.chr_byte(table, tile, fine_row, true);
+        // Sprite fetch: MMC5 may give sprites a different bank set than the
+        // background (the `$5120-$5127` "A" set).
+        let lo = ppu.chr_byte_sprite(table, tile, fine_row, false);
+        let hi = ppu.chr_byte_sprite(table, tile, fine_row, true);
 
         for dx in 0..8usize {
             let x = left + dx;

@@ -349,21 +349,26 @@ pub(crate) fn end_of_frame(game: &mut Game, opts: &EnemyOpts) {
 
 // ------------------------------------------------------------ helpers
 
-/// PRG image offset of `addr` in 16 KiB `bank`.
-fn prg_offset(bank: u8, addr: u16) -> usize {
-    usize::from(bank) * 0x4000 + usize::from(addr & 0x3FFF)
+/// PRG image offset of `addr` in 16 KiB `bank`, for this ROM's mapper.
+fn prg_offset(game: &Game, bank: u8, addr: u16) -> usize {
+    super::prg_offset(game, bank, addr)
 }
 
 /// Whether the in-memory PRG holds `bytes` at `bank:addr`.
 fn prg_matches(game: &Game, bank: u8, addr: u16, bytes: &[u8]) -> bool {
-    let o = prg_offset(bank, addr);
+    let o = prg_offset(game, bank, addr);
     game.prg.get(o..o + bytes.len()) == Some(bytes)
 }
 
-/// Whether switchable `bank` is mapped at `$8000-$BFFF`.
+/// Whether switchable 16 KiB `bank` is mapped at `$8000-$BFFF`.
 fn bank_mapped(game: &Game, bank: u8) -> bool {
-    game.prg.len() >= 0x8000
-        && game.mmc1.map_prg(0x8000, game.prg.len()) == usize::from(bank) * 0x4000
+    let len = game.prg.len();
+    let want = usize::from(bank) * 2 * 0x2000;
+    let got = match game.mapper {
+        crate::game::MapperKind::Mmc1 => game.mmc1.map_prg(0x8000, len),
+        crate::game::MapperKind::Mmc5 => game.mmc5.map_prg(0x8000, len),
+    };
+    got == want
 }
 
 /// Bank 4 mapped and the world one of `worlds`.
@@ -432,7 +437,7 @@ fn isqrt(v: u32) -> u32 {
 /// Halve enemy `code`'s entry in `bank`'s HP table (`0` and `$FF` are left
 /// alone: "none" and "invincible").
 fn halve_hp(game: &mut Game, bank: u8, code: u8) {
-    let o = prg_offset(bank, HP_TABLE + u16::from(code));
+    let o = prg_offset(game, bank, HP_TABLE + u16::from(code));
     let Some(&hp) = game.prg.get(o) else {
         return;
     };

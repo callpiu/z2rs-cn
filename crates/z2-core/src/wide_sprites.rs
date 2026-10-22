@@ -120,6 +120,14 @@ pub fn set_enabled(game: &mut Game, on: bool) {
     if on {
         let mut shadow = Game::new();
         shadow.prg.clone_from(&game.prg);
+        // The shadow re-runs the ROM's own sprite code, so it has to agree with
+        // the host about banking and about the fixed window. `Game::new()`
+        // defaults to MMC1; on a translated (MMC5) image that maps PRG the
+        // wrong way and the shadow reads garbage, which silently produces no
+        // margin sprites.
+        shadow.mapper = game.mapper;
+        shadow.mmc1 = game.mmc1;
+        shadow.mmc5 = game.mmc5.clone();
         game.margin_sprites.shadow = Some(Box::new(shadow));
         game.trap_register_cycles(
             OBSERVER_TRAP_NAME,
@@ -191,6 +199,10 @@ fn observe(game: &mut Game, x: usize) {
     sh.ram = game.ram;
     sh.wram = game.wram;
     sh.mmc1 = game.mmc1;
+    // The shadow must see the same PRG mapping the frame is running with, or
+    // it re-runs `bank7_Display` against the wrong bank and draws nothing
+    // useful (MMC5 switches banks every frame).
+    sh.mmc5 = game.mmc5.clone();
     sh.cpu = game.cpu;
     sh.cpu.nmi_pending = false;
     sh.cpu.irq_pending = false;

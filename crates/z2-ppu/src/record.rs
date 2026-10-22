@@ -136,8 +136,16 @@ pub struct LineRecord {
     pub ctrl: u8,
     /// `$2001` at line commit.
     pub mask: u8,
-    /// CHR asset pages of pattern slots 0/1 at line commit.
+    /// CHR asset pages of pattern slots 0/1 at line commit, for **background**
+    /// fetches.
+    ///
+    /// A mapper may give background and sprites different banks (MMC5 in
+    /// 8x16-sprite mode), so this is not interchangeable with
+    /// [`LineRecord::sprite_page`].
     pub chr_page: [u8; 2],
+    /// CHR asset pages of pattern slots 0/1 at line commit, for **sprite**
+    /// fetches. Equal to `chr_page` unless the mapper splits the two sets.
+    pub sprite_page: [u8; 2],
     /// Palette RAM snapshot at commit (raw 32 bytes; the four backdrop
     /// cells are kept equal in both halves, see [`LineRecord::palette_entry`]).
     pub palette: [u8; 32],
@@ -170,6 +178,7 @@ impl LineRecord {
         ctrl: 0,
         mask: 0,
         chr_page: [NO_PAGE; 2],
+        sprite_page: [NO_PAGE; 2],
         palette: [0; 32],
         backdrop: 0x0F,
         split: false,

@@ -160,6 +160,15 @@ pub struct ComposeInput<'a> {
     /// Emulated time for layer drift and animation: `(frame, frames per
     /// second)`. `None` is time 0 (still layers, no drift).
     pub time: Option<(u64, f64)>,
+    /// The rectangle that shows **text** right now, or `None` for ordinary
+    /// gameplay.
+    ///
+    /// A translated ROM re-uses the original terrain's `(page, tile)` numbers
+    /// for its Chinese glyphs — e.g. the tiles the pack knows as clouds
+    /// (`page 3, tiles 179-184`) carry dialogue text. Painting HD terrain over
+    /// the text box turns it into fragments of scenery, so HD art is skipped
+    /// **inside the box only**: the surrounding scene keeps its HD look.
+    pub text_rect: Option<crate::TextRect>,
 }
 
 /// A layer's drift in whole pack pixels and its animation frame at emulated
@@ -185,6 +194,7 @@ pub fn layer_motion(
     };
     ([offset(layer.drift[0]), offset(layer.drift[1])], index)
 }
+
 
 /// Compose-time failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,8 +276,40 @@ pub struct Compositor {
     line_front: bool,
     /// Source columns `first..=last` of the line `resolve_columns` was last
     /// called for that a game text window occupies ([`text_box_span`]):
-    /// front layers are not drawn there.
-    text_box: Option<(usize, usize)>,
+    /// front layers and HD cells are not drawn there.
+    pub(crate) text_box: Option<(usize, usize)>,
+    /// Diagnostic: frames seen, for the periodic tile dump.
+    dbg_frames: u32,
+}
+
+/// Path for [`append_debug`] when `Z2RS_DEBUG_TEXTBOX` names one.
+fn debug_textbox_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("Z2RS_DEBUG_TEXTBOX")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+/// Path for the `over_tiles` layer diagnostic (`Z2RS_DEBUG_LAYER`).
+fn debug_layer_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("Z2RS_DEBUG_LAYER")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+/// Append one line to `path`, ignoring write errors.
+///
+/// Diagnostics go to a file on purpose: `eprintln!` per scanline floods the
+/// console and drops the game to a couple of frames per second, which made the
+/// report impossible to reproduce.
+fn append_debug(path: &std::path::Path, line: &str) {
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
 }
 
 /// Nametable tiles of the game's window frame (`bank3_Tables_for_dialog_box_rows`,
@@ -355,6 +397,7 @@ impl Compositor {
             line_back: false,
             line_front: false,
             text_box: None,
+            dbg_frames: 0,
         };
         me.reconfigure(scale, margin_tiles)?;
         Ok(me)
@@ -416,6 +459,35 @@ impl Compositor {
     /// # Errors
     /// [`ComposeError`] on a buffer, source-size or scale mismatch.
     pub fn compose(&mut self, input: ComposeInput<'_>, out: &mut [u8]) -> Result<(), ComposeError> {
+        // Tile dump (`Z2RS_DEBUG_LAYER=<path>`): rewrite the file with the
+        // **latest** frame's tile identities, every 30 frames. Overwriting (not
+        // appending) keeps it small and means the file always describes
+        // whatever is on screen right now — so quitting while in the town
+        // leaves the town's tiles behind, which is the question being asked
+        // ("which tile is the ground made of?").
+        if let Some(path) = debug_layer_path() {
+            self.dbg_frames = self.dbg_frames.wrapping_add(1);
+            if self.dbg_frames % 30 == 1 {
+                let mut text = String::new();
+                for y in [8usize, 60, 132, 148, 164, 180, 200, 220] {
+                    let rec = input.record.line(y);
+                    let ids: Vec<String> = rec
+                        .tiles
+                        .iter()
+                        .take(34)
+                        .map(|t| {
+                            if t.fetched && t.page != NO_PAGE {
+                                format!("{:02X}p{:02X}", t.tile, t.page)
+                            } else {
+                                "--".to_string()
+                            }
+                        })
+                        .collect();
+                    text.push_str(&format!("y={y}: {}\n", ids.join(" ")));
+                }
+                let _ = std::fs::write(&path, text);
+            }
+        }
         if out.len() != self.rgba_len() {
             return Err(ComposeError::BadOutLen {
                 want: self.rgba_len(),
@@ -538,8 +610,26 @@ impl Compositor {
 
         for y in 0..HEIGHT {
             self.upscale_line(&input, y, out);
-            let Some(pack) = input.pack else { continue };
+            // Whole-screen text (title, name entry, save menus) drops HD for
+            // the frame; a dialogue box only loses it inside the window, which
+            // `paint_slot` finds per line from the border tiles.
+            let whole_screen_text = input
+                .text_rect
+                .is_some_and(|r| r == crate::TextRect::FULL && r.covers_row(y));
+            let Some(pack) = input.pack.filter(|_| !whole_screen_text) else {
+                continue;
+            };
             let rec = input.record.line(y);
+            // The window's own columns come from its border tiles, so this
+            // tracks whatever box the ROM actually drew (dialogue, sign, pause
+            // pane) instead of a hard-coded rectangle.
+            // The window's own columns come from its border tiles, so this
+            // tracks whatever box the ROM actually drew instead of relying on
+            // a game-state flag. Doing it unconditionally matters: the
+            // translated ROM draws some dialogue boxes without setting the
+            // state the caller watches (`$074C`), and those frames otherwise
+            // got HD terrain painted straight over the Chinese text.
+            self.resolve_columns(rec, &input, y);
             if !Self::line_uses_hd(rec) {
                 if layered && rec.valid && rec.mask & PPUMASK_GRAYSCALE == 0 {
                     self.prepare_layer_rows(pack, step, y);
@@ -556,8 +646,49 @@ impl Compositor {
             } else {
                 self.replay_sprites(rec, &input, pack, step, y, hd_bg, out);
             }
+            // Final word on a text window: repaint it straight from the ROM's
+            // own pixels. Every HD path above (front layer, back layer, cell,
+            // sprite art, actor clips) is supposed to respect `text_box`, but
+            // "supposed to" is not a guarantee — one of them kept bleeding
+            // through the gaps in the Chinese glyphs. Doing it once per line,
+            // last, is the only way to make the window's appearance independent
+            // of how many paint paths the pack happens to trigger.
+            if let Some((first, last)) = self.text_box {
+                self.restore_nes_span(&input, y, first, last, out);
+            }
         }
         Ok(())
+    }
+
+    /// Repaint source columns `first..=last` of line `y` with the ROM's own
+    /// pixels, undoing any HD that reached them.
+    ///
+    /// Sprites are left alone: a Link or NPC standing over the box must keep
+    /// whatever the frame drew. Only the background is restored, which is where
+    /// the glyphs live.
+    fn restore_nes_span(
+        &self,
+        input: &ComposeInput<'_>,
+        y: usize,
+        first: usize,
+        last: usize,
+        out: &mut [u8],
+    ) {
+        let n = self.scale as usize;
+        let row_bytes = self.out_w * 4;
+        let src = &input.indexed.pixels[y * self.src_width..(y + 1) * self.src_width];
+        let row0 = &mut out[y * n * row_bytes..(y + 1) * n * row_bytes];
+        let lo = first.min(src.len());
+        let hi = (last + 1).min(src.len());
+        for x in lo..hi {
+            let rgba = input.palette.rgba(src[x]);
+            for fy in 0..n {
+                let at = fy * row_bytes + x * n * 4;
+                for px in row0[at..at + n * 4].as_chunks_mut::<4>().0 {
+                    px.copy_from_slice(&rgba);
+                }
+            }
+        }
     }
 
     fn actor_owns(&self, slot: u8) -> bool {
@@ -710,8 +841,16 @@ impl Compositor {
             return false;
         }
         let (id, _) = Self::window_tile(rec, s.x as i32);
+        // The scene's page may sit 64 higher than the pack's when the
+        // translated ROM is in traditional mode (same artwork, shifted page);
+        // the signature must accept both, exactly like `covers_tile`.
+        let page_matches = u64::from(id.page) == s.page
+            || id
+                .page
+                .checked_sub(crate::chr::TRADITIONAL_PAGE_OFFSET)
+                .is_some_and(|p| u64::from(p) == s.page);
         id.fetched
-            && u64::from(id.page) == s.page
+            && page_matches
             && u64::from(id.tile) == s.tile
             && s.colors
                 .is_none_or(|colors| bg_colors(rec, id.pal).map(|c| u64::from(c & 0x3f)) == colors)
@@ -809,6 +948,18 @@ impl Compositor {
         for px in 0..8i32 {
             let wx = 8 * k + px - fine_x;
             if !(-left_px..WIDTH as i32 + left_px).contains(&wx) {
+                continue;
+            }
+            // Inside the text window the ROM's own glyphs must show through: a
+            // translated ROM puts Chinese text in the very `(page, tile)` slots
+            // the pack knows as terrain. `text_box` holds **source pixel
+            // columns** (`text_box_span` indexes the per-pixel `col_id` array),
+            // so compare the window pixel here.
+            let src_x = (wx + left_px).max(0) as usize;
+            if self
+                .text_box
+                .is_some_and(|(first, last)| (first..=last).contains(&src_x))
+            {
                 continue;
             }
             let (id, sub_x) = wide_bg_tile(rec, ml, fill, wx);
@@ -1074,6 +1225,31 @@ impl Compositor {
                 usable && chr_sub(input.chr_rom, id, sub_x).is_some_and(|v| v != 0);
         }
         self.text_box = text_box_span(&self.col_id[..self.src_width]);
+        // Diagnostic switch (`Z2RS_DEBUG_TEXTBOX=1`): log the window detection
+        // Diagnostics (`Z2RS_DEBUG_TEXTBOX=<path>`): append one line per frame
+        // that has a window. Written to a **file**, not stderr — a per-line
+        // stderr log stalls the game to a few frames per second.
+        if let Some(path) = debug_textbox_path() {
+            let borders = self.col_id[..self.src_width]
+                .iter()
+                .filter(|id| {
+                    id.fetched && id.page != NO_PAGE && TEXT_BOX_BORDER_TILES.contains(&id.tile)
+                })
+                .count();
+            if borders > 0 && y % 8 == 0 {
+                let page = self.col_id[..self.src_width]
+                    .iter()
+                    .find(|id| id.fetched && id.page != NO_PAGE)
+                    .map_or(0xFF, |id| id.page);
+                append_debug(
+                    &path,
+                    &format!(
+                        "y={y} borders={borders} page={page:02X} span={:?}",
+                        self.text_box
+                    ),
+                );
+            }
+        }
     }
 
     /// Find each layer's source row for every output row of line `y`, once
@@ -1169,6 +1345,8 @@ impl Compositor {
         let margin_px = (self.src_width.saturating_sub(WIDTH) / 2) as i32;
         let id = self.col_id[sx];
         let hwx = (sx as i32 - margin_px) * ps as i32 + (fx * step) as i32;
+        // `text_box` holds **source pixel columns** (`text_box_span` indexes the
+        // per-pixel `col_id` array), so compare against `sx` directly.
         let in_text_box = self
             .text_box
             .is_some_and(|(first, last)| (first..=last).contains(&sx));
@@ -1178,7 +1356,12 @@ impl Compositor {
             }
         }
         let mut transparent = !self.col_opaque[sx];
-        if let Some(cell) = cell {
+        // Inside a text window the ROM's own glyphs must show through: a
+        // translated ROM puts its Chinese text in the very `(page, tile)` slots
+        // the pack knows as terrain, so an HD cell here paints scenery over the
+        // letters. Dropping only the *layers* was not enough — the HD
+        // background cell below replaced the glyph all the same.
+        if let Some(cell) = cell.filter(|_| !in_text_box) {
             let px = pack.cell_pixels(cell).pixel(
                 u32::from(self.col_sub[sx]) * ps + fx * step,
                 u32::from(id.fine_y & 7) * ps + fy * step,
@@ -1193,6 +1376,15 @@ impl Compositor {
             return input
                 .palette
                 .rgba(rec.palette_entry(usize::from(id.pal & 3) * 4 + usize::from(sub)));
+        }
+        // A back layer must not show through the text window either. Glyph
+        // tiles have transparent pixels between their strokes; without this
+        // guard the pack's full-screen back layer (e.g. the town art at
+        // `world 1, scene 7`) bleeds through the gaps in the Chinese glyphs and
+        // the dialogue reads as scenery fragments. Indoor scenes have no such
+        // layer, which is why they looked fine.
+        if in_text_box {
+            return input.palette.rgba(rec.backdrop);
         }
         match self.sample_layers(pack, LayerDepth::Back, id, hwx, fy as usize) {
             Some(px) => [px[0], px[1], px[2], 0xFF],
@@ -1268,6 +1460,13 @@ impl Compositor {
         let src = &input.indexed.pixels[y * self.src_width..(y + 1) * self.src_width];
         for (sx, &idx) in src.iter().enumerate() {
             if idx != rec.backdrop {
+                continue;
+            }
+            // Same guard as `background_pixel`: no HD behind a text window.
+            if self
+                .text_box
+                .is_some_and(|(first, last)| (first..=last).contains(&sx))
+            {
                 continue;
             }
             for fy in 0..n {

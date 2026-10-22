@@ -88,27 +88,115 @@ pub const SIDEVIEW_WORLD_TILES: i32 = 128;
 
 const PRG_BANK_LEN: usize = 0x4000;
 
-/// Byte at CPU `addr` with PRG `bank` mapped at `$8000-$BFFF` and the last
-/// bank fixed at `$C000-$FFFF` (MMC1 PRG mode 3). Anything else, or a byte
-/// outside the image, reads 0.
+/// How a PRG image is banked, so [`prg_read`] can find the byte the CPU would
+/// see at an address.
+///
+/// The margin decoders read tiles out of the cartridge image, and "which byte
+/// is at `bank`:`addr`" depends on the mapper:
+///
+/// * [`PrgLayout::Mmc1`] — 16 KiB banks, the **last 16 KiB** fixed at
+///   `$C000-$FFFF` (Zelda II's SLROM wiring, PRG mode 3).
+/// * [`PrgLayout::Mmc5`] — 8 KiB banks, only the **last 8 KiB** fixed at
+///   `$E000-$FFFF`; `$8000` and `$C000` are separate switchable windows.
+///
+/// Reading an MMC5 (translated) image through the MMC1 layout returns the
+/// wrong bytes for every banked address, which is what made the widescreen
+/// margins draw garbage tiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrgLayout {
+    /// 16 KiB banks, last 16 KiB fixed (original cartridge).
+    Mmc1,
+    /// 8 KiB banks, last 8 KiB fixed (translated MMC5 cartridge).
+    Mmc5,
+}
+
+impl PrgLayout {
+    /// The layout a `Game`'s mapper implies.
+    #[must_use]
+    pub fn of(mapper: crate::game::MapperKind) -> Self {
+        match mapper {
+            crate::game::MapperKind::Mmc1 => PrgLayout::Mmc1,
+            crate::game::MapperKind::Mmc5 => PrgLayout::Mmc5,
+        }
+    }
+}
+
+/// Byte at CPU `addr` for PRG `bank` under `layout`. `bank` is the value the
+/// ROM put in its bank register (`$8000-$BFFF` for MMC1 mode 3, `$8000` for
+/// MMC5). Anything else, or a byte outside the image, reads 0.
 #[must_use]
-pub fn prg_read(prg: &[u8], bank: u8, addr: u16) -> u8 {
-    let off = match addr {
-        0x8000..=0xBFFF => usize::from(bank) * PRG_BANK_LEN + usize::from(addr - 0x8000),
-        0xC000..=0xFFFF => match prg.len().checked_sub(PRG_BANK_LEN) {
-            Some(last) => last + usize::from(addr - 0xC000),
-            None => return 0,
+pub fn prg_read_layout(prg: &[u8], layout: PrgLayout, bank: u8, addr: u16) -> u8 {
+    let off = match layout {
+        PrgLayout::Mmc1 => match addr {
+            0x8000..=0xBFFF => usize::from(bank) * PRG_BANK_LEN + usize::from(addr - 0x8000),
+            0xC000..=0xFFFF => match prg.len().checked_sub(PRG_BANK_LEN) {
+                Some(last) => last + usize::from(addr - 0xC000),
+                None => return 0,
+            },
+            _ => return 0,
         },
-        _ => return 0,
+        PrgLayout::Mmc5 => {
+            const B8: usize = 0x2000;
+            match addr {
+                // `$8000-$BFFF` is a **16 KiB** window (MMC5 PRG mode 2, the
+                // only mode this ROM uses), so the byte comes from the 8 KiB
+                // bank pair starting at `bank * 2`.
+                //
+                // `bank` here is the value in `$0769`, which the ROM uses as a
+                // *16 KiB* bank index — the same units the original MMC1 image
+                // uses. The translated image keeps those indices and merely
+                // re-banks the ROM into 8 KiB units, so index `n` addresses
+                // 8 KiB banks `2n` / `2n+1`.
+                //
+                // Multiplying by 2 (not masking with `0xFE`) is what matches:
+                // for `bank = 1` this reads 8 KiB bank 2, which holds the same
+                // bytes the original keeps at 16 KiB bank 1 — the metatile
+                // pointer table then comes back as `$8417`, exactly as the
+                // original ROM returns.
+                0x8000..=0xBFFF => {
+                    let base = usize::from(bank) * 2 * B8;
+                    let half = if addr >= 0xA000 { B8 } else { 0 };
+                    base + half + usize::from(addr & 0x1FFF)
+                }
+                // `$C000-$DFFF`: a separate 8 KiB window (`$5116`). The area
+                // tables this decoder reads live in the `$8000` window, so no
+                // caller needs this today; answer with the next pair.
+                0xC000..=0xDFFF => {
+                    (usize::from(bank) * 2 + 2) * B8 + usize::from(addr - 0xC000)
+                }
+                // Fixed: the last 8 KiB of the image.
+                0xE000..=0xFFFF => match prg.len().checked_sub(B8) {
+                    Some(last) => last + usize::from(addr - 0xE000),
+                    None => return 0,
+                },
+                _ => return 0,
+            }
+        }
     };
     prg.get(off).copied().unwrap_or(0)
+}
+
+/// Byte at CPU `addr` with PRG `bank` under the **original** MMC1 layout.
+///
+/// Kept for the existing callers/tests; mapper-aware code should use
+/// [`prg_read_layout`].
+#[must_use]
+pub fn prg_read(prg: &[u8], bank: u8, addr: u16) -> u8 {
+    prg_read_layout(prg, PrgLayout::Mmc1, bank, addr)
+}
+
+/// Little-endian word at `addr` under `layout` (second byte at `addr + 1`,
+/// wrapping).
+#[must_use]
+pub fn prg_read16_layout(prg: &[u8], layout: PrgLayout, bank: u8, addr: u16) -> u16 {
+    u16::from(prg_read_layout(prg, layout, bank, addr))
+        | (u16::from(prg_read_layout(prg, layout, bank, addr.wrapping_add(1))) << 8)
 }
 
 /// Little-endian word at `addr` (second byte at `addr + 1`, wrapping).
 #[must_use]
 pub fn prg_read16(prg: &[u8], bank: u8, addr: u16) -> u16 {
-    u16::from(prg_read(prg, bank, addr))
-        | (u16::from(prg_read(prg, bank, addr.wrapping_add(1))) << 8)
+    prg_read16_layout(prg, PrgLayout::Mmc1, bank, addr)
 }
 
 /// The value congruent to `ring_pos` modulo `ring` nearest to `estimate`
@@ -129,8 +217,10 @@ pub fn resolve_ring(ring_pos: i32, ring: i32, estimate: i32) -> i32 {
 pub struct SideviewSource<'a> {
     /// Full WRAM (`$6000-$7FFF`).
     pub wram: &'a [u8],
-    /// Raw PRG image (16 KiB banks, last bank fixed).
+    /// Raw PRG image.
     pub prg: &'a [u8],
+    /// How that image is banked (mapper-dependent).
+    pub layout: PrgLayout,
     /// Area PRG bank (`$0769`).
     pub area_bank: u8,
     /// Metatile used outside level RAM (`$40`, or `$42` for ground type 0).
@@ -142,6 +232,17 @@ impl<'a> SideviewSource<'a> {
     /// `ram[$010C]`.
     #[must_use]
     pub fn from_state(ram: &[u8], wram: &'a [u8], prg: &'a [u8]) -> Self {
+        Self::from_state_layout(ram, wram, prg, PrgLayout::Mmc1)
+    }
+
+    /// [`Self::from_state`] with an explicit PRG layout.
+    #[must_use]
+    pub fn from_state_layout(
+        ram: &[u8],
+        wram: &'a [u8],
+        prg: &'a [u8],
+        layout: PrgLayout,
+    ) -> Self {
         let fill_code = if ram.get(usize::from(ADDR_GROUND_TYPE)).copied().unwrap_or(0) == 0 {
             0x42
         } else {
@@ -150,6 +251,7 @@ impl<'a> SideviewSource<'a> {
         Self {
             wram,
             prg,
+            layout,
             area_bank: ram
                 .get(usize::from(ADDR_AREA_PRG_BANK))
                 .copied()
@@ -184,14 +286,20 @@ impl<'a> SideviewSource<'a> {
     #[must_use]
     pub fn chr_tile(&self, code: u8, half: u8, sub_row: u8) -> (u8, u8) {
         let group = code >> 6;
-        let ptr = prg_read16(
+        let ptr = prg_read16_layout(
             self.prg,
+            self.layout,
             self.area_bank,
             METATILE_PTR_TABLE + u16::from(group) * 2,
         );
         let entry = ptr.wrapping_add(u16::from(code & 0x3F) * 4);
         let idx = u16::from(half & 1) * 2 + u16::from(sub_row & 1);
-        let tile = prg_read(self.prg, self.area_bank, entry.wrapping_add(idx));
+        let tile = prg_read_layout(
+            self.prg,
+            self.layout,
+            self.area_bank,
+            entry.wrapping_add(idx),
+        );
         (tile, group)
     }
 
@@ -440,10 +548,38 @@ pub fn overworld_position_live(ram: &[u8; 0x800]) -> bool {
 
 /// Fill `out` for `tiles` per side from the frame `record` and the
 /// post-frame RAM/WRAM/PRG. Pure; `tiles` is clamped by [`Margins`].
+///
+/// Assumes the **original** MMC1 image layout; mapper-aware callers should
+/// use [`build_margins_layout`].
 pub fn build_margins(
     ram: &[u8; 0x800],
     wram: &[u8; 0x2000],
     prg: &[u8],
+    record: &FrameRecord,
+    tiles: u8,
+    out: &mut Margins,
+) {
+    build_margins_layout(
+        ram,
+        wram,
+        prg,
+        PrgLayout::Mmc1,
+        record,
+        tiles,
+        out,
+    );
+}
+
+/// [`build_margins`] with an explicit PRG banking layout.
+///
+/// A translated (MMC5) ROM must pass [`PrgLayout::Mmc5`]: its area tables live
+/// in 8 KiB banks and its fixed window is the last 8 KiB, so reading them the
+/// MMC1 way returns the wrong bytes and the margins draw garbage tiles.
+pub fn build_margins_layout(
+    ram: &[u8; 0x800],
+    wram: &[u8; 0x2000],
+    prg: &[u8],
+    layout: PrgLayout,
     record: &FrameRecord,
     tiles: u8,
     out: &mut Margins,
@@ -453,7 +589,7 @@ pub fn build_margins(
     let slots = (m + 1).min(MARGIN_SLOTS);
     let mode = ram[usize::from(ADDR_GAME_MODE)];
     let menu = ram[usize::from(ADDR_MENU)];
-    let sv = SideviewSource::from_state(ram, wram, prg);
+    let sv = SideviewSource::from_state_layout(ram, wram, prg, layout);
     // The RLE row table walk is only worth doing on overworld frames, and
     // only once Link stands on the map: on the frame the game switches into
     // mode $05 the screen is still the loader's and `$73` is not set yet.
@@ -519,6 +655,60 @@ mod tests {
         assert_eq!(prg_read(&prg, 3, 0x6000), 0);
         assert_eq!(prg_read(&prg, 200, 0x8000), 0, "outside image");
         assert_eq!(prg_read(&[], 0, 0xC000), 0);
+    }
+
+    /// A translated (MMC5) image uses 8 KiB banks with only the last 8 KiB
+    /// fixed, and its `$8000-$BFFF` window is **16 KiB** wide.
+    ///
+    /// `bank` is a *16 KiB* index (the units `$0769` uses and the original
+    /// MMC1 image is laid out in), so index `n` addresses 8 KiB banks
+    /// `2n` / `2n+1`. Verified against the real ROM: for `bank = 1` this reads
+    /// the same bytes the original keeps at 16 KiB bank 1, so the metatile
+    /// pointer table returns `$8417` on both images.
+    #[test]
+    fn mmc5_layout_uses_16k_window_and_last_8k_fixed() {
+        // 256 KiB image = 32 x 8 KiB banks.
+        let mut prg = vec![0u8; 32 * 0x2000];
+        // 16 KiB index 3 -> 8 KiB banks 6/7. `$8500` is 0x500 into the first.
+        prg[6 * 0x2000 + 0x500] = 0x34;
+        prg[6 * 0x2000 + 0x501] = 0x12;
+        // The `$A000` half of the same 16 KiB window is 8 KiB bank 7.
+        prg[7 * 0x2000 + 0x000] = 0x5A;
+        // Fixed window: the last 8 KiB (bank 31).
+        prg[31 * 0x2000 + 0x0AE0] = 0x77;
+
+        assert_eq!(
+            prg_read_layout(&prg, PrgLayout::Mmc5, 3, 0x8500),
+            0x34,
+            "16 KiB index 3, $8500 -> 8 KiB bank 6"
+        );
+        assert_eq!(prg_read16_layout(&prg, PrgLayout::Mmc5, 3, 0x8500), 0x1234);
+        assert_eq!(
+            prg_read_layout(&prg, PrgLayout::Mmc5, 3, 0xA000),
+            0x5A,
+            "$A000 is the second 8 KiB bank of the same window"
+        );
+        assert_eq!(
+            prg_read_layout(&prg, PrgLayout::Mmc5, 5, 0xEAE0),
+            0x77,
+            "$E000-$FFFF is the last 8 KiB whatever the bank register says"
+        );
+        // Note: MMC1 bank 3 `$8500` is byte 0xC500, which happens to alias
+        // 8 KiB bank 6 — the two layouts agree *at this particular address*.
+        // The `$9000` / `$A000` checks below are the ones that tell them
+        // apart, because the MMC5 window is 16 KiB while MMC1's is too but
+        // starts at a different offset.
+        prg[6 * 0x2000 + 0x1000] = 0xE1; // MMC5: 16 KiB idx 3, $9000
+        assert_eq!(
+            prg_read_layout(&prg, PrgLayout::Mmc5, 3, 0x9000),
+            0xE1,
+            "MMC5 $9000 of 16 KiB index 3 is 8 KiB bank 6 + 0x1000"
+        );
+        assert_eq!(
+            prg_read_layout(&prg, PrgLayout::Mmc5, 3, 0xA000),
+            0x5A,
+            "$A000 switches to the next 8 KiB bank, not +0x1000"
+        );
     }
 
     #[test]

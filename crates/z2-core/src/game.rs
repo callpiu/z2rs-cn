@@ -492,6 +492,15 @@ impl Game {
             // bank 0 (no vector table) at $E000-$FFFF. Pin the last banks
             // instead — see `Mmc5::init_fix_last`.
             game.mmc5.init_fix_last(game.prg.len());
+            // The header mirroring bit is the power-on nametable layout. The
+            // translated ROM rewrites `$5105` at boot anyway, but the PPU must
+            // not start on the wrong one (a wrong mapping draws whole scenes
+            // with tiles from the other nametable).
+            game.mmc5.nt_map = if flags6 & 0x01 != 0 {
+                0b01_00_00_00 // vertical: screens A, B, A, B ($44)
+            } else {
+                0b01_01_00_00 // horizontal: screens A, A, B, B ($50)
+            };
         }
         // Bit 0: 0 = horizontal, 1 = vertical (keep power-on PRG mode 3).
         let mirr = if flags6 & 0x01 != 0 { 2 } else { 3 };
@@ -500,7 +509,14 @@ impl Game {
         // the power-on MMC1 (8 KiB mode, banks 0/1) plus the header
         // mirroring bit. Later bank switches re-sync lazily at every
         // vblank hook (see `vblank_hook`).
-        game.ppu.sync_from_mapper(&game.chr, &game.mmc1);
+        match kind {
+            MapperKind::Mmc1 => game.ppu.sync_from_mapper(&game.chr, &game.mmc1),
+            MapperKind::Mmc5 => {
+                // Also applies `$5105` mirroring; the MMC1 call would impose
+                // the MMC1 register's layout, which MMC5 ROMs never write.
+                game.ppu.sync_from_mapper_mmc5(&game.chr, &game.mmc5);
+            }
+        }
         Ok(game)
     }
 
@@ -844,7 +860,18 @@ impl Game {
         let Some(rec) = self.frame_record() else {
             return false;
         };
-        crate::wide_margins::build_margins(&self.ram, &self.wram, &self.prg, rec, tiles, out);
+        // The decoder reads area tables out of PRG, so it must use this ROM's
+        // banking: an MMC5 image read as MMC1 yields the wrong bytes and the
+        // margins draw garbage tiles.
+        crate::wide_margins::build_margins_layout(
+            &self.ram,
+            &self.wram,
+            &self.prg,
+            crate::wide_margins::PrgLayout::of(self.mapper),
+            rec,
+            tiles,
+            out,
+        );
         self.margin_sprites_into(&mut out.sprites);
         true
     }
@@ -929,8 +956,16 @@ impl Game {
         wide: &mut z2_ppu::WideFrame,
     ) -> bool {
         if let Some(rec) = self.frame_record() {
-            crate::wide_margins::build_margins(
-                &self.ram, &self.wram, &self.prg, rec, tiles, margins,
+            // Mapper-aware: a translated (MMC5) image needs 8 KiB banks and a
+            // last-8-KiB fixed window, or the metatile tables read garbage.
+            crate::wide_margins::build_margins_layout(
+                &self.ram,
+                &self.wram,
+                &self.prg,
+                crate::wide_margins::PrgLayout::of(self.mapper),
+                rec,
+                tiles,
+                margins,
             );
             self.margin_sprites_into(&mut margins.sprites);
             z2_ppu::render_wide_indexed(&self.frame, rec, margins, &self.chr, wide);
@@ -952,10 +987,95 @@ impl Game {
 
     // ------------------------------------------------ execution (interp)
 
+    /// The screen rectangle that shows **text** right now, or `None` for
+    /// ordinary gameplay.
+    ///
+    /// A translated (MMC5) ROM re-uses the original terrain's `(page, tile)`
+    /// numbers for its Chinese glyphs — the tiles an HD pack knows as clouds
+    /// (`page 3, tiles 179-184`) carry text instead. Painting HD terrain over
+    /// the text box turns it into fragments of scenery.
+    ///
+    /// Only the box's own rectangle is returned, not the whole row: a dialogue
+    /// box is a window in the middle of the screen, and suppressing entire rows
+    /// made a horizontal band flip between art styles right across the view.
+    ///
+    /// The bounds are the box the ROM draws (measured from the rendered frame:
+    /// border tiles `$CA-$CC` at columns 14..=27):
+    ///
+    /// * dialogue box — x 112..224, y 32..96;
+    /// * pause pane — x 112..224, y 104..208 (`$0524 != 0`);
+    /// * title / name entry / save menus — the whole screen.
+    #[cfg(feature = "interp")]
+    #[must_use]
+    pub fn text_rect(&self) -> Option<z2_ppu::TextRect> {
+        /// Columns the dialogue/pause box occupies (tiles 14..=27).
+        const BOX_X: core::ops::Range<usize> = 112..224;
+        /// Rows of an open dialogue box.
+        const DIALOGUE_Y: core::ops::Range<usize> = 32..96;
+        /// Rows of the pause pane.
+        const PAUSE_Y: core::ops::Range<usize> = 104..208;
+
+        // `$074C` = dialogue state (nonzero while a box is open).
+        // `$0524` = pause pane (the spell/item list).
+        if self.ram[0x074C] != 0 {
+            return Some(z2_ppu::TextRect::new(
+                BOX_X.start,
+                BOX_X.end,
+                DIALOGUE_Y.start,
+                DIALOGUE_Y.end,
+            ));
+        }
+        if self.ram[0x0524] != 0 {
+            return Some(z2_ppu::TextRect::new(
+                BOX_X.start,
+                BOX_X.end,
+                PAUSE_Y.start,
+                PAUSE_Y.end,
+            ));
+        }
+        // Title / name entry / save menus draw text on every line and never
+        // reach the sideview or overworld modes.
+        if !matches!(self.ram[0x0736], 0x05 | 0x0B) {
+            return Some(z2_ppu::TextRect::FULL);
+        }
+        None
+    }
+
+    /// Whether the frame on screen is **text** (see [`Game::text_rect`]).
+    #[cfg(feature = "interp")]
+    #[must_use]
+    pub fn is_showing_text(&self) -> bool {
+        self.text_rect().is_some()
+    }
+
     /// Fetch RESET vector and initialise (interp only).
+    ///
+    /// On an MMC5 (translated) image this also starts the session in
+    /// **simplified** Chinese by clearing `$5130` bits 1-0 and the ROM's own
+    /// latch at `$01D4`.
+    ///
+    /// The switch itself is the ROM's: on the title screen **Right** writes
+    /// `$5130 = 1` (traditional) and **Left** writes `$5130 = 0` (simplified),
+    /// both also to the latch at `$01D4`. Measured on the real ROM — pressing
+    /// Right is *not* a toggle, it always lands on traditional. Nothing here
+    /// interferes with that: in-session switching stays fully available.
+    ///
+    /// Clearing `$5130` alone is not enough: the ROM restores it from `$01D4`
+    /// a frame or two into init (`$9E8E`: `LDA $01D4 / CMP #$01 / ... / STA
+    /// $5130`), and `$01D4` survives `reset` too. Both are cleared.
+    ///
+    /// Why simplified is the sensible default: the traditional glyphs live 64
+    /// CHR pages higher (page 26 -> 90), and HD packs are indexed against the
+    /// simplified layout.
     #[cfg(feature = "interp")]
     pub fn reset(&mut self) {
         Cpu::reset(self);
+        if self.mapper == MapperKind::Mmc5 {
+            self.mmc5.chr_upper2 = 0;
+            self.mmc5.chr_upper = [0; 4];
+            // The ROM's own simplified/traditional latch (see the doc above).
+            self.ram[0x01D4] = 0;
+        }
     }
 
     /// Latch an NMI edge (serviced at the next instruction boundary).

@@ -79,6 +79,7 @@ use crate::coop::{CoopOptions, CoopState, ENEMY_SLOTS, SWAP_LEN};
 use crate::cpu::{Cpu, ExecError, Mmc1};
 use crate::enh::EnhState;
 use crate::game::{Game, FRAME_LEN};
+use crate::mmc5::Mmc5;
 use crate::ppu_bind::PpuBind;
 use crate::wide_gameplay::{WideGameplayState, DEMON_SLOTS, MAX_MARGIN_SPRITES};
 use z2_ppu::MarginSprite;
@@ -87,7 +88,9 @@ use z2_ppu::SpriteLimit;
 /// Magic prefix of [`GameState::to_bytes`].
 pub const STATE_MAGIC: [u8; 4] = *b"Z2GS";
 /// Format version of [`GameState::to_bytes`].
-pub const STATE_VERSION: u16 = 3;
+///
+/// Version 4 added the MMC5 mapper block (see [`GameState::mmc5`]).
+pub const STATE_VERSION: u16 = 4;
 
 /// Complete snapshot of a [`Game`]'s live emulation state (see the module
 /// docs for the per-field capture table).
@@ -100,6 +103,17 @@ pub struct GameState {
     frame: Box<[u8; FRAME_LEN]>,
     cpu: Cpu,
     mmc1: Mmc1,
+    /// MMC5 register file + ExRAM, for translated (mapper 5) images.
+    ///
+    /// Without this, restoring a state left the CHR banks, the `$5130`
+    /// simplified/traditional bits, the IRQ latches and ExRAM at whatever the
+    /// live session happened to hold — the picture came back as a different
+    /// scene's tiles. Netplay rollback had the same hole, and `hash_state` did
+    /// not even see MMC5 drift, so a desync could not be detected.
+    mmc5: Mmc5,
+    /// Whether `mmc5` is live for this game (`mapper == Mmc5`). An MMC1 game
+    /// pays one byte and skips the block, so its image stays small.
+    mmc5_in_use: bool,
     ppu: PpuBind,
     coop: CoopState,
     wide_game: WideGameplayState,
@@ -135,6 +149,8 @@ impl GameState {
             frame,
             cpu: Cpu::new(),
             mmc1: Mmc1::new(),
+            mmc5: Mmc5::new(),
+            mmc5_in_use: false,
             ppu: PpuBind::new(),
             coop: CoopState::default(),
             wide_game: WideGameplayState::default(),
@@ -220,6 +236,12 @@ impl GameState {
                 w.u16(at);
             }
         }
+        // Version 4: the MMC5 block, present only for a mapper-5 image so an
+        // MMC1 state keeps its old size (and its old `hash_state`).
+        w.bool(self.mmc5_in_use);
+        if self.mmc5_in_use {
+            write_mmc5(&mut w, &self.mmc5);
+        }
         w.0
     }
 
@@ -288,11 +310,65 @@ impl GameState {
             2 => Some(ExecError::MaxInstructions { at }),
             _ => return Err(StateError::Invalid("exec error")),
         };
+        if version >= 4 {
+            s.mmc5_in_use = r.bool()?;
+            if s.mmc5_in_use {
+                s.mmc5 = read_mmc5(&mut r)?;
+            }
+        }
         if !r.0.is_empty() {
             return Err(StateError::Trailing(r.0.len()));
         }
         Ok(s)
     }
+}
+
+fn write_mmc5(w: &mut Writer, m: &Mmc5) {
+    w.bytes(&[
+        m.prg_mode,
+        m.chr_mode,
+        m.prg_ram_protect,
+        m.exram_mode,
+        m.nt_map,
+        m.fill_tile,
+        m.fill_attr,
+        m.prg_ram_bank,
+    ]);
+    w.bytes(&m.prg_banks);
+    w.bytes(&m.chr_banks);
+    w.bytes(&m.chr_upper);
+    w.u8(m.chr_upper2);
+    w.bytes(&[m.irq_target, m.mul_a, m.mul_b]);
+    w.bool(m.irq_enabled);
+    w.bool(m.irq_pending);
+    w.bool(m.in_frame);
+    w.bytes(&m.exram);
+}
+
+fn read_mmc5(r: &mut Reader<'_>) -> Result<Mmc5, StateError> {
+    let mut m = Mmc5::new();
+    let head = r.take(8)?;
+    m.prg_mode = head[0];
+    m.chr_mode = head[1];
+    m.prg_ram_protect = head[2];
+    m.exram_mode = head[3];
+    m.nt_map = head[4];
+    m.fill_tile = head[5];
+    m.fill_attr = head[6];
+    m.prg_ram_bank = head[7];
+    m.prg_banks.copy_from_slice(r.take(4)?);
+    m.chr_banks.copy_from_slice(r.take(8)?);
+    m.chr_upper.copy_from_slice(r.take(4)?);
+    m.chr_upper2 = r.u8()?;
+    let t = r.take(3)?;
+    m.irq_target = t[0];
+    m.mul_a = t[1];
+    m.mul_b = t[2];
+    m.irq_enabled = r.bool()?;
+    m.irq_pending = r.bool()?;
+    m.in_frame = r.bool()?;
+    m.exram.copy_from_slice(r.take(1024)?);
+    Ok(m)
 }
 
 fn write_coop(w: &mut Writer, c: &CoopState) {
@@ -552,6 +628,8 @@ impl Game {
         s.frame.copy_from_slice(&self.frame[..]);
         s.cpu = self.cpu;
         s.mmc1 = self.mmc1;
+        s.mmc5 = self.mmc5.clone();
+        s.mmc5_in_use = self.mapper == crate::game::MapperKind::Mmc5;
         s.ppu.copy_state_from(&self.ppu);
         s.coop.clone_from(&self.coop);
         s.wide_game.clone_from(&self.wide_game);
@@ -581,7 +659,21 @@ impl Game {
         self.frame.copy_from_slice(&s.frame[..]);
         self.cpu = s.cpu;
         self.mmc1 = s.mmc1;
+        // MMC5 registers first, then the PPU, then re-derive the PPU's CHR
+        // slots and `$5105` mirroring from whatever `self.mmc5` ended up as.
+        // Re-deriving unconditionally is what makes this correct for **both**
+        // kinds of image: a version-4 snapshot carries the registers, so the
+        // re-derivation reproduces the saved tables exactly; an older snapshot
+        // has none, so the live registers win and the PPU is made consistent
+        // with them instead of keeping a stale `mapper_key` that would skip the
+        // next real bank write.
+        if s.mmc5_in_use && self.mapper == crate::game::MapperKind::Mmc5 {
+            self.mmc5 = s.mmc5.clone();
+        }
         self.ppu.copy_state_from(&s.ppu);
+        if self.mapper == crate::game::MapperKind::Mmc5 {
+            self.ppu.sync_from_mapper_mmc5(&self.chr, &self.mmc5);
+        }
         if s.coop.enabled {
             crate::coop::register_coop_traps(self);
         }
