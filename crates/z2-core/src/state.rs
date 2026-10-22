@@ -576,6 +576,7 @@ impl Game {
         self.ram = s.ram;
         self.wram = s.wram;
         self.oam = s.oam;
+        self.shown_valid = 0;
         self.palette = s.palette;
         self.frame.copy_from_slice(&s.frame[..]);
         self.cpu = s.cpu;

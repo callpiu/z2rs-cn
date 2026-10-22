@@ -91,16 +91,13 @@ fn with_real_rom_boots_steps_and_facts() {
     emu.render_frame().expect("renders");
     assert_eq!(emu.frame_rgba().len(), 256 * 240 * 4);
 
-    // Snapshot roundtrip preserves the memory images. Note: the engine
-    // frame counter is not rewound on restore (no core state import), so
-    // the re-taken blob carries the newer counter — ram/wram match exactly.
+    // A snapshot holds the whole game: restoring it rewinds everything,
+    // the frame counter included.
     let blob = emu.snapshot().expect("snapshot");
     emu.step_frames(1, 5).expect("steps on");
     emu.restore(&blob).expect("restore");
-    let blob2 = emu.snapshot().expect("snapshot again");
-    assert_ne!(blob, blob2, "frame counter advanced past the snapshot");
-    emu.restore(&blob2).expect("restore again");
-    assert_eq!(blob2, emu.snapshot().expect("snapshot stable"));
+    assert_eq!(emu.frame_count(), 30.0);
+    assert_eq!(blob, emu.snapshot().expect("snapshot again"));
 
     // SRAM roundtrip is an exact 8 KiB image.
     let sram = emu.sram_bytes().expect("sram");

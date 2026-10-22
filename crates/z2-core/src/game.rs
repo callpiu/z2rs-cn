@@ -332,6 +332,17 @@ pub struct Game {
     /// derive from it (see [`Game::step`]).
     #[cfg(feature = "interp")]
     pub(crate) frame_end_dots: u64,
+    /// Copy of [`Game::ram`] taken at the last `$4014` OAM DMA: the state the
+    /// displayed sprites were drawn from (the NMI copies OAM before the
+    /// frame's logic runs). Presentation only ([`Game::shown_ram`]); never
+    /// read by game logic and not part of save states.
+    pub(crate) shown_ram: [u8; 0x800],
+    /// The copy before [`Game::shown_ram`] (one DMA earlier), for observers
+    /// that look for state edges between two displayed frames.
+    pub(crate) shown_prev: [u8; 0x800],
+    /// DMA-time copies held: 0, 1 (`shown_ram`) or 2 (both); reset by
+    /// `load_state`.
+    pub(crate) shown_valid: u8,
     pub(crate) frame_count: u64,
 }
 
@@ -351,6 +362,9 @@ impl Game {
             oam: [0; 256],
             palette: [0; 32],
             frame: zeroed_frame(),
+            shown_ram: [0; 0x800],
+            shown_prev: [0; 0x800],
+            shown_valid: 0,
             #[cfg(feature = "interp")]
             cpu: Cpu::new(),
             #[cfg(feature = "interp")]
@@ -713,6 +727,28 @@ impl Game {
         &self.ram
     }
 
+    /// RAM as it was when the displayed OAM was copied (`$4014` DMA, before
+    /// this frame's logic): the state behind the sprites on screen. Falls
+    /// back to [`Game::ram`] until a DMA has happened (and after
+    /// `load_state`). Read-only; for presentation observers.
+    pub fn shown_ram(&self) -> &[u8; 0x800] {
+        if self.shown_valid > 0 {
+            &self.shown_ram
+        } else {
+            &self.ram
+        }
+    }
+
+    /// [`Game::shown_ram`] of the previous displayed frame (one OAM DMA
+    /// earlier); falls back to [`Game::shown_ram`] when no older copy exists.
+    pub fn shown_prev_ram(&self) -> &[u8; 0x800] {
+        if self.shown_valid > 1 {
+            &self.shown_prev
+        } else {
+            self.shown_ram()
+        }
+    }
+
     /// Borrow the 8 KiB battery WRAM.
     pub fn wram(&self) -> &[u8; 0x2000] {
         &self.wram
@@ -824,10 +860,17 @@ impl Game {
 
     /// Scene identity and camera of the last frame when it was sideview
     /// play, for HD pack layers. `None` otherwise or with the record off.
+    /// `vroom` is the current virtual room (`EnhState::vroom`, id + 1,
+    /// 0 = an original room).
     #[cfg(feature = "interp")]
     #[must_use]
     pub fn sideview_scene(&self) -> Option<crate::wide_margins::SideviewScene> {
-        crate::wide_margins::sideview_scene(&self.ram, self.frame_record()?)
+        crate::wide_margins::sideview_scene(&self.ram, self.frame_record()?).map(|s| {
+            crate::wide_margins::SideviewScene {
+                vroom: self.enh_state.vroom,
+                ..s
+            }
+        })
     }
 
     /// Margins plus composition into `wide` (centre = `frame` verbatim).

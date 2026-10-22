@@ -59,6 +59,8 @@ Settings are read when the game starts, so change them in the launcher before pr
 
 The launcher's HD graphics pack section imports a pack from a `.zip` file or from an unzipped folder. The game checks the pack before it replaces the installed one, so a broken pack leaves the old one in place. You can cancel an import while it runs, replace the pack later or remove it. [hd-packs.md](hd-packs.md) explains how packs are made.
 
+HD packs are presented at their full pack resolution, so their extra detail is preserved when the picture is scaled to the screen.
+
 ## Accessibility
 
 Each on-screen gamepad button is exposed to TalkBack and Switch Access as its own labelled control ("D-pad up", "A button", "Start" and so on), even though the pad is drawn as one surface. Activating one presses that button briefly. Every launcher control has a spoken label, and TalkBack announces controllers as they connect and disconnect.

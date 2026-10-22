@@ -60,8 +60,8 @@
 //!   read from the loaded PRG) and renders 44.1 kHz PCM, which
 //!   [`WebEmu::take_audio_f32`] hands to the `AudioWorklet` ring buffer
 //!   (`site/worklet.js`). This is the same path the native frontend plays.
-//! * Saves: [`WebEmu::snapshot`]/[`WebEmu::restore`] move `Z2WEB01` blobs
-//!   (see [`snapshot`]); [`WebEmu::sram_bytes`]/[`WebEmu::load_sram`] move
+//! * Saves: [`WebEmu::snapshot`]/[`WebEmu::restore`] move whole-game `Z2GS`
+//!   blobs; older RAM-only blobs remain readable (see [`snapshot`]); [`WebEmu::sram_bytes`]/[`WebEmu::load_sram`] move
 //!   the raw 8 KiB battery WRAM. IndexedDB lives in JS (`site/app.js`).
 //! * QA: `site/app.js` publishes `window.z2` on top of these exports — the
 //!   nine stable members `{ facts(), state(), input(mask, frames), step(n),
@@ -111,8 +111,8 @@ pub const MAX_STEPS_PER_CALL: u32 = 3600;
 /// Max accepted ROM file bytes (headered file is ~256 KiB; generous bound).
 pub const MAX_ROM_BYTES: usize = 512 * 1024;
 
-/// Max accepted snapshot/SRAM upload bytes.
-pub const MAX_STATE_BYTES: usize = 64 * 1024;
+/// Max accepted snapshot upload bytes (a `Z2GS` state is about 140 KiB).
+pub const MAX_STATE_BYTES: usize = 256 * 1024;
 
 /// RGBA bytes per frame (`256 * 240 * 4`).
 pub const FRAME_RGBA_LEN: usize = FRAME_LEN * 4;
@@ -1459,22 +1459,19 @@ impl WebEmu {
         )
     }
 
-    /// QA `snapshot()`: encode the `Z2WEB01` save-state blob (persist it
-    /// in IndexedDB on the JS side).
+    /// QA `snapshot()`: encode the whole `Game` as a `Z2GS` save state
+    /// ([`z2_core::state::GameState`]; persist it in IndexedDB on the JS
+    /// side). CPU, mapper, nametables and both CHR slots are in it, so a
+    /// state loaded over a different scene draws its own tiles.
     pub fn snapshot(&self) -> Result<Vec<u8>, String> {
         let game = need_game(&self.game).map_err(|e| e.to_string())?;
-        Ok(
-            WebSnapshot::new(game.frame_count(), game.ram(), game.wram())
-                .map_err(WebError::from)
-                .map_err(|e| e.to_string())?
-                .encode(),
-        )
+        Ok(game.save_state().to_bytes())
     }
 
-    /// QA `restore(bytes)`: accept a `Z2WEB01` blob (exact) or a `Z2SNAP01`
-    /// corpus snapshot (ram/wram import; see [`snapshot`]). Returns a JSON
-    /// status object. Note: the engine frame counter is not rewound (the
-    /// core exposes no state import); memory images are restored exactly.
+    /// QA `restore(bytes)`: accept a `Z2GS` save state (exact, the frame
+    /// counter included), or an older `Z2WEB01` blob or `Z2SNAP01` corpus
+    /// snapshot (RAM and WRAM only; see [`snapshot`]). Returns a JSON
+    /// status object.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<String, String> {
         self.restore_impl(bytes).map_err(|e| e.to_string())
     }
@@ -1917,7 +1914,17 @@ impl WebEmu {
                 bytes.len()
             )));
         }
-        // Own format first, corpus interop second.
+        // Whole-game states first, then the older RAM-only blobs.
+        if bytes.starts_with(&z2_core::state::STATE_MAGIC) {
+            let state = z2_core::state::GameState::from_bytes(bytes)
+                .map_err(|e| WebError::Snapshot(e.to_string()))?;
+            let game = need_game_mut(&mut self.game)?;
+            game.load_state(&state);
+            return Ok(format!(
+                "{{\"format\":\"z2gs\",\"frame\":{}}}",
+                state.frame_count()
+            ));
+        }
         if let Ok(snap) = WebSnapshot::decode(bytes) {
             let game = need_game_mut(&mut self.game)?;
             game.ram.copy_from_slice(&snap.ram);
@@ -2004,13 +2011,16 @@ impl WebEmu {
                 region: s.region,
                 scene: s.scene,
                 camera_x: s.camera_x,
+                vroom: s.vroom,
             }));
         }
         // An unarmed record still composes: `FrameRecord::new()` yields the
         // centre frame with backdrop margins and no HD substitutions.
         let empty = z2_ppu::FrameRecord::new();
         let record = game.frame_record().unwrap_or(&empty);
-        let mut actors = [z2_render::ActorInput::default(); 2];
+        // Players first, then enemies, NPCs and bosses (slots 20-55 of OAM).
+        let enemies = game.actor_visuals();
+        let mut actors = [z2_render::ActorInput::default(); 2 + 6];
         let mut count = 0;
         for v in game.player_visuals().into_iter().flatten() {
             actors[count] = z2_render::ActorInput {
@@ -2020,6 +2030,24 @@ impl WebEmu {
                 position: v.position,
                 flip_h: v.flip_h,
                 oam_mask: v.oam_mask,
+                priority_oam: v.priority_oam,
+                ..z2_render::ActorInput::default()
+            };
+            count += 1;
+        }
+        for v in &enemies {
+            actors[count] = z2_render::ActorInput {
+                id: v.id,
+                character: &v.character,
+                clip: v.clip,
+                character_fallback: &v.base_character,
+                clip_fallback: v.clip_fallback.unwrap_or(""),
+                restart: v.restart,
+                flash_palette: v.flash_palette,
+                position: v.position,
+                flip_h: v.flip_h,
+                oam_mask: v.oam_mask,
+                margin_mask: v.margin_mask,
                 priority_oam: v.priority_oam,
             };
             count += 1;
@@ -2743,14 +2771,27 @@ mod tests {
         let mut emu = booted();
         emu.step_frames(game::BTN_START, 3).unwrap();
         let blob = emu.snapshot().unwrap();
-        assert_eq!(&blob[..8], snapshot::WEB_MAGIC);
-        // Poke RAM, restore, compare.
+        assert_eq!(&blob[..4], &z2_core::state::STATE_MAGIC);
+        assert!(blob.len() <= MAX_STATE_BYTES);
+        // Move on, poke RAM and the mapper, restore, compare.
+        emu.step_frames(0, 5).unwrap();
         emu.game.as_mut().unwrap().ram[0x42] ^= 0xFF;
+        emu.game.as_mut().unwrap().mmc1.chr0 ^= 0x1F;
         let status: serde_json::Value =
             serde_json::from_str(&emu.restore(&blob).unwrap()).expect("status JSON");
-        assert_eq!(status["format"], "z2web01");
+        assert_eq!(status["format"], "z2gs");
         let blob2 = emu.snapshot().unwrap();
         assert_eq!(blob, blob2);
+        // Older RAM-only blobs still load.
+        let game = emu.game.as_ref().unwrap();
+        let old = WebSnapshot::new(game.frame_count(), game.ram(), game.wram())
+            .unwrap()
+            .encode();
+        emu.game.as_mut().unwrap().ram[0x42] ^= 0xFF;
+        let status: serde_json::Value =
+            serde_json::from_str(&emu.restore(&old).unwrap()).expect("status JSON");
+        assert_eq!(status["format"], "z2web01");
+        assert_eq!(emu.snapshot().unwrap(), blob);
         emu.restore(b"junk").unwrap_err();
     }
 

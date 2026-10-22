@@ -15,6 +15,7 @@ members = [
     "crates/z2-debug",
     "crates/z2-render",
     "crates/z2-rando",
+    "crates/z2-content",
     "tools/xtask",
     "tools/z2-signal",
 ]

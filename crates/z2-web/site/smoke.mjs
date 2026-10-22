@@ -95,7 +95,7 @@ try {
   }
   if (!Array.isArray(facts.enemies) || facts.enemies.length !== 6) fail('facts().enemies is not 6 slots');
 
-  // Snapshot roundtrip in-tab (counter advances; memory restores).
+  // Snapshot roundtrip in-tab restores the whole game and frame counter.
   const roundtrip = await page.evaluate(() => {
     const a = window.z2.snapshot();
     window.z2.step(5);
@@ -103,7 +103,8 @@ try {
     const b = window.z2.snapshot();
     window.z2.restore(b);
     const c = window.z2.snapshot();
-    return b.length === c.length && b.every((v, i) => v === c[i]);
+    return a.length === b.length && a.every((v, i) => v === b[i]) &&
+      b.length === c.length && b.every((v, i) => v === c[i]);
   });
   if (!roundtrip) fail('snapshot/restore roundtrip mismatch');
 

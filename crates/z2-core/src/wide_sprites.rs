@@ -93,10 +93,14 @@ pub struct MarginSpriteState {
     pub(crate) enabled: bool,
     /// Private interpreter the observer re-runs `bank7_Display` in.
     shadow: Option<Box<Game>>,
-    /// Entries drawn since the last OAM DMA, with their OAM offset.
-    pending: Vec<(u8, MarginSprite)>,
+    /// Entries drawn since the last OAM DMA, with their OAM offset and the
+    /// object slot (`x`) that drew them.
+    pending: Vec<(u8, u8, MarginSprite)>,
     /// Entries latched at the last OAM DMA: what the current frame shows.
     shown: Vec<MarginSprite>,
+    /// Per [`MarginSpriteState::shown`] entry: the object slot that drew it
+    /// and its OAM entry (0-63), whose real OAM copy the cartridge hid.
+    shown_src: Vec<(u8, u8)>,
     /// Sprites appended by other providers ([`Game::margin_sprites_mut`]).
     pub(crate) extra: Vec<MarginSprite>,
     /// Shadow runs that failed (illegal opcode / budget); zero when healthy.
@@ -108,6 +112,7 @@ pub fn set_enabled(game: &mut Game, on: bool) {
     let st = &mut game.margin_sprites;
     st.pending.clear();
     st.shown.clear();
+    st.shown_src.clear();
     if on == st.enabled {
         return;
     }
@@ -136,9 +141,12 @@ pub(crate) fn on_oam_dma(game: &mut Game) {
     if !st.enabled {
         return;
     }
-    st.pending.sort_by_key(|&(off, _)| off);
+    st.pending.sort_by_key(|&(off, _, _)| off);
     st.shown.clear();
-    st.shown.extend(st.pending.iter().map(|&(_, s)| s));
+    st.shown.extend(st.pending.iter().map(|&(_, _, s)| s));
+    st.shown_src.clear();
+    st.shown_src
+        .extend(st.pending.iter().map(|&(off, slot, _)| (slot, off / 4)));
     st.pending.clear();
 }
 
@@ -146,6 +154,15 @@ pub(crate) fn on_oam_dma(game: &mut Game) {
 #[must_use]
 pub fn shown(game: &Game) -> &[MarginSprite] {
     &game.margin_sprites.shown
+}
+
+/// Where each [`shown`] entry came from: `(object slot, OAM entry)`. The
+/// cartridge parked that OAM entry off screen (Y `$F8`) because its column
+/// fell outside the window; the margin sprite is the same cell in window
+/// coordinates. Index `i` here is index `i` of [`Game::margin_sprites_into`].
+#[must_use]
+pub fn shown_sources(game: &Game) -> &[(u8, u8)] {
+    &game.margin_sprites.shown_src
 }
 
 /// The `$EF11` trap: observe, then run the real routine untouched.
@@ -209,6 +226,7 @@ fn observe(game: &mut Game, x: usize) {
         }
         pending.push((
             (4 * i) as u8,
+            slot as u8,
             MarginSprite {
                 x: wx as i16,
                 y: e[0],
@@ -258,11 +276,12 @@ mod tests {
             tile: 1,
             attr: 0,
         };
-        g.margin_sprites.pending.push((0x40, s(-20)));
-        g.margin_sprites.pending.push((0x10, s(300)));
+        g.margin_sprites.pending.push((0x40, 2, s(-20)));
+        g.margin_sprites.pending.push((0x10, 5, s(300)));
         assert!(shown(&g).is_empty(), "nothing shown before the DMA");
         on_oam_dma(&mut g);
         assert_eq!(shown(&g), &[s(300), s(-20)]);
+        assert_eq!(shown_sources(&g), &[(5, 4), (2, 16)]);
         on_oam_dma(&mut g);
         assert!(shown(&g).is_empty(), "the next DMA latches the next frame");
     }

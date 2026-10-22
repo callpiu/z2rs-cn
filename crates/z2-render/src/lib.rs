@@ -34,6 +34,7 @@
 #![forbid(unsafe_code)]
 
 pub mod actors;
+pub mod camera;
 pub mod chr;
 pub mod compositor;
 #[cfg(not(target_arch = "wasm32"))]

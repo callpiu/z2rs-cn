@@ -286,6 +286,9 @@ jobs:
           `SHA256SUMS` lists the checksum of every archive and the APK.
           EOF
           sed -i "s/VERSION/${GITHUB_REF_NAME#v}/" notes.md
+          if [ -f "packaging/releases/$GITHUB_REF_NAME.md" ]; then
+            cp "packaging/releases/$GITHUB_REF_NAME.md" notes.md
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --title "z2rs $GITHUB_REF_NAME" \
             --notes-file notes.md \

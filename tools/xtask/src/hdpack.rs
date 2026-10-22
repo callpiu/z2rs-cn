@@ -479,6 +479,12 @@ fn check(args: &[String]) -> i32 {
             return EXIT_INVALID;
         }
     };
+    // Actor frames decode lazily in play; decode each one here so a broken
+    // PNG is reported now rather than shown as tile art later.
+    if let Err(e) = pack.actor_library().verify() {
+        eprintln!("xtask hdpack check: {}: {e}", dir.display());
+        return EXIT_INVALID;
+    }
     let author = pack
         .author()
         .map(|a| format!(" by {a}"))
@@ -513,13 +519,28 @@ fn check(args: &[String]) -> i32 {
         pack.variant_count()
     );
     if !pack.actor_clips().is_empty() {
+        let mut characters = std::collections::BTreeMap::<&str, usize>::new();
+        for clip in pack.actor_clips() {
+            *characters.entry(clip.character.as_str()).or_default() +=
+                clip.frames.iter().map(|f| f.decoded_bytes()).sum::<usize>();
+        }
+        let (heaviest, most) = characters
+            .iter()
+            .max_by_key(|(_, b)| **b)
+            .map_or(("-", 0), |(c, b)| (*c, *b));
         println!(
-            "  {} actor clip(s), {} animation frame(s)",
+            "  {} actor clip(s) of {} character(s), {} animation frame(s) \
+             (limits: {} pairs, {} MiB decoded per character, decoded lazily); \
+             largest character {heaviest} decodes to {} MiB",
             pack.actor_clips().len(),
+            characters.len(),
             pack.actor_clips()
                 .iter()
                 .map(|clip| clip.frames.len())
-                .sum::<usize>()
+                .sum::<usize>(),
+            z2_render::actors::MAX_ACTOR_CLIPS,
+            z2_render::actors::MAX_DECODED_BYTES >> 20,
+            most >> 20,
         );
         for clip in pack.actor_clips() {
             println!(
@@ -556,7 +577,8 @@ fn check(args: &[String]) -> i32 {
         let when = |v: Option<u8>| v.map_or(any.clone(), |v| v.to_string());
         let sheet = usize::from(layer.sheet);
         println!(
-            "    {} ({}x{}): {:?} at ({}, {}), scroll {}%{}{}; world {}, region {}, scene {}",
+            "    {} ({}x{}): {:?} at ({}, {}), scroll {}%{}{}; world {}, region {}, scene {}, \
+             vroom {}",
             pack.sheet_file(sheet).unwrap_or("?"),
             pack.sheets()[sheet].width,
             pack.sheets()[sheet].height,
@@ -565,14 +587,24 @@ fn check(args: &[String]) -> i32 {
             layer.y,
             layer.scroll,
             if layer.repeat_x { ", repeats" } else { "" },
-            if layer.over_tiles.is_empty() {
-                String::new()
-            } else {
-                format!(", over {} tile(s)", layer.over_tiles.len())
+            {
+                let mut extra = if layer.over_tiles.is_empty() {
+                    String::new()
+                } else {
+                    format!(", over {} tile(s)", layer.over_tiles.len())
+                };
+                if layer.frames.len() > 1 {
+                    extra += &format!(", {} frames at {} fps", layer.frames.len(), layer.fps);
+                }
+                if layer.drift != [0.0, 0.0] {
+                    extra += &format!(", drifts ({}, {}) px/s", layer.drift[0], layer.drift[1]);
+                }
+                extra
             },
             when(layer.world),
             when(layer.region),
-            when(layer.scene)
+            when(layer.scene),
+            layer.vroom.map_or(any.clone(), |v| v.to_string())
         );
     }
     EXIT_OK

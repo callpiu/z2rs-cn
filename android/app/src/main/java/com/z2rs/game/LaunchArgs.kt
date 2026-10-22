@@ -16,6 +16,14 @@ object LaunchArgs {
     /** `--scale-mode` values (ScaleMode::parse). */
     val SCALE_MODES = listOf("fit", "integer")
 
+    /**
+     * `--hd-scale` sent with a pack, the desktop launcher's default. Without
+     * it the game uses config's 1, composes the pack at 256x240 and stretches
+     * that to the screen. A pack whose scale 4 does not divide (1x, 2x, 3x)
+     * is presented at its own scale instead; an 8x pack is held to 4x.
+     */
+    const val HD_SCALE = 4
+
     fun build(
         romPath: String,
         widescreen: String,
@@ -28,7 +36,7 @@ object LaunchArgs {
         args += listOf("--scale-mode", if (scaleMode in SCALE_MODES) scaleMode else "fit")
         if (coopLocal) args += "--coop-local"
         // `--hd-pack ''` would turn a pack off; no pack is simply no flag.
-        if (!hdPack.isNullOrBlank()) args += listOf("--hd-pack", hdPack)
+        if (!hdPack.isNullOrBlank()) args += listOf("--hd-pack", hdPack, "--hd-scale", HD_SCALE.toString())
         return args
     }
 

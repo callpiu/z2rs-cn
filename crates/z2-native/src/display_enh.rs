@@ -40,10 +40,10 @@
 
 use std::collections::VecDeque;
 
+use z2_core::collision_debug::Kind;
 use z2_core::enh::display::MAX_VOLUME;
 pub use z2_core::enh::{DisplayEnh, FlashColor};
 use z2_core::game::{Game, FRAME_H, FRAME_LEN, FRAME_W};
-use z2_core::player::{body_box, sword_box, BODY_DY, SWORD_RETRACTED};
 use z2_ppu::FrameRecord;
 
 // ------------------------------------------------------------ RAM addresses
@@ -74,19 +74,9 @@ pub const BOSS_FLASH: u8 = 0xE8;
 /// Game mode of side-view play.
 pub const MODE_SIDEVIEW: u8 = 0x0B;
 
-const RAM_LINK_SX: usize = 0x00CC;
 const RAM_LINK_Y: usize = 0x0029;
 const RAM_LINK_X: usize = 0x004D;
 const RAM_LINK_PAGE: usize = 0x003B;
-const RAM_LINK_FACING: usize = 0x009F;
-const RAM_LINK_SPRITE: usize = 0x0080;
-const RAM_SHIELD_POS: usize = 0x0017;
-const RAM_SWORD_X: usize = 0x047E;
-const RAM_SWORD_Y: usize = 0x0480;
-const RAM_ENEMY_Y: usize = 0x002A;
-const RAM_ENEMY_PAGE: usize = 0x003C;
-const RAM_ENEMY_X: usize = 0x004E;
-const RAM_ENEMY_EXISTS: usize = 0x00B6;
 const RAM_ENEMY_HP: usize = 0x00C2;
 /// Enemy slots.
 pub const ENEMY_SLOTS: usize = 6;
@@ -722,6 +712,15 @@ fn glyph(c: char) -> Option<[u8; 5]> {
         'B' => [6, 5, 6, 5, 6],
         'C' => [7, 4, 4, 4, 7],
         'D' => [6, 5, 5, 5, 6],
+        'I' => [7, 2, 2, 2, 7],
+        'L' => [4, 4, 4, 4, 7],
+        'M' => [5, 7, 7, 5, 5],
+        'N' => [5, 7, 7, 7, 5],
+        'O' => [7, 5, 5, 5, 7],
+        'R' => [6, 5, 6, 5, 5],
+        'S' => [7, 4, 7, 1, 7],
+        'T' => [7, 2, 2, 2, 2],
+        'W' => [5, 5, 7, 7, 5],
         'X' => [5, 5, 2, 5, 5],
         'Y' => [5, 5, 2, 2, 2],
         'H' => [5, 5, 7, 5, 5],
@@ -827,82 +826,6 @@ const YELLOW: [u8; 3] = [0xF8, 0xD8, 0x40];
 const RED: [u8; 3] = [0xF8, 0x38, 0x38];
 const CYAN: [u8; 3] = [0x40, 0xD8, 0xF8];
 
-/// One overlay box in window game pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DevBox {
-    /// Left edge.
-    pub x: i32,
-    /// Top edge.
-    pub y: i32,
-    /// Width.
-    pub w: i32,
-    /// Height.
-    pub h: i32,
-    /// Enemy slot (`None` = Link's body or sword).
-    pub slot: Option<u8>,
-    /// Sword box.
-    pub sword: bool,
-}
-
-/// Link and enemy boxes from side-view RAM (empty elsewhere). Link's body
-/// and sword use the engine's own box builders (`z2_core::player`); enemy
-/// boxes are 16x16 at the slot position (per-type sizes are not ported),
-/// placed relative to Link: `screen = world - link_world + $CC`.
-#[must_use]
-pub fn dev_boxes(ram: &[u8; 0x800]) -> Vec<DevBox> {
-    let mut out = Vec::new();
-    if ram[RAM_MODE] != MODE_SIDEVIEW {
-        return out;
-    }
-    let sx = ram[RAM_LINK_SX];
-    let ly = ram[RAM_LINK_Y];
-    let right = ram[RAM_LINK_FACING] != 2;
-    let dy = BODY_DY[usize::from(ram[RAM_SHIELD_POS] != 0)];
-    let b = body_box(sx, ly, right, dy);
-    out.push(DevBox {
-        x: i32::from(b.x),
-        y: i32::from(b.y),
-        w: i32::from(b.w),
-        h: i32::from(b.h),
-        slot: None,
-        sword: false,
-    });
-    let swy = ram[RAM_SWORD_Y];
-    if swy < SWORD_RETRACTED {
-        let swx = ram[RAM_SWORD_X];
-        let sprite = ram[RAM_LINK_SPRITE];
-        let s = sword_box(swx, swy, swx < sx, sprite == 8 || sprite == 9);
-        out.push(DevBox {
-            x: i32::from(s.x),
-            y: i32::from(s.y),
-            w: i32::from(s.w),
-            h: i32::from(s.h),
-            slot: None,
-            sword: true,
-        });
-    }
-    let link_world = i32::from(ram[RAM_LINK_PAGE]) * 256 + i32::from(ram[RAM_LINK_X]);
-    for s in 0..ENEMY_SLOTS {
-        if ram[RAM_ENEMY_EXISTS + s] == 0 {
-            continue;
-        }
-        let world = i32::from(ram[RAM_ENEMY_PAGE + s]) * 256 + i32::from(ram[RAM_ENEMY_X + s]);
-        let x = world - link_world + i32::from(sx);
-        if !(-16..FRAME_W as i32 + 16).contains(&x) {
-            continue;
-        }
-        out.push(DevBox {
-            x,
-            y: i32::from(ram[RAM_ENEMY_Y + s]),
-            w: 16,
-            h: 16,
-            slot: Some(s as u8),
-            sword: false,
-        });
-    }
-    out
-}
-
 /// Whether any overlay is drawn.
 #[must_use]
 pub fn overlays_active(enh: &DisplayEnh) -> bool {
@@ -912,11 +835,26 @@ pub fn overlays_active(enh: &DisplayEnh) -> bool {
 /// Draw the quest timer and dev overlays for `ram` onto `cv`.
 pub fn draw_overlays(
     cv: &mut Canvas<'_>,
-    ram: &[u8; 0x800],
+    game: &Game,
     frame_count: u64,
     quest_frames: Option<u64>,
     enh: &DisplayEnh,
 ) {
+    draw_world_overlays(cv, game, enh);
+    draw_screen_overlays(cv, game, frame_count, quest_frames, enh);
+}
+
+/// The overlays attached to the screen rather than the world: the quest
+/// timer, the frame counter, the hitbox legend and Link's XY readout. With a
+/// camera zoom they are drawn after it, at their normal size.
+pub fn draw_screen_overlays(
+    cv: &mut Canvas<'_>,
+    game: &Game,
+    frame_count: u64,
+    quest_frames: Option<u64>,
+    enh: &DisplayEnh,
+) {
+    let ram = game.ram();
     if let Some(t) = quest_frames.and_then(|f| quest_timer_text(enh, f)) {
         let x = FRAME_W as i32 - 2 - text_width(&t);
         cv.text(x, 1, &t, WHITE);
@@ -924,28 +862,12 @@ pub fn draw_overlays(
     if enh.dev_framecount {
         cv.text(2, 1, &format!("F {frame_count}"), WHITE);
     }
-    if !(enh.dev_hitboxes || enh.dev_xy || enh.dev_hp) {
-        return;
-    }
-    let boxes = dev_boxes(ram);
-    for b in &boxes {
-        if enh.dev_hitboxes {
-            let c = match (b.slot, b.sword) {
-                (Some(_), _) => RED,
-                (None, true) => YELLOW,
-                (None, false) => GREEN,
-            };
-            cv.rect(b.x, b.y, b.w, b.h, c);
-        }
-        if enh.dev_xy && !b.sword {
-            cv.cross(b.x, b.y, CYAN);
-        }
-        if enh.dev_hp {
-            if let Some(s) = b.slot {
-                let hp = ram[RAM_ENEMY_HP + usize::from(s)];
-                cv.text(b.x, (b.y - 7).max(0), &format!("{hp}"), RED);
-            }
-        }
+    if enh.dev_hitboxes && ram[RAM_MODE] == MODE_SIDEVIEW {
+        cv.text(2, 33, "BODY", GREEN);
+        cv.text(34, 33, "SHIELD", [0xE0, 0x80, 0xFF]);
+        cv.text(62, 33, "SWORD", YELLOW);
+        cv.text(86, 33, "ENEMY", RED);
+        cv.text(110, 33, "TERRAIN", CYAN);
     }
     if enh.dev_xy {
         let t = format!(
@@ -954,6 +876,41 @@ pub fn draw_overlays(
             ram[RAM_LINK_Y]
         );
         cv.text(2, FRAME_H as i32 - 7, &t, CYAN);
+    }
+}
+
+/// The overlays attached to the world (collision boxes, terrain probes,
+/// object points, enemy HP): zoomed with the picture.
+pub fn draw_world_overlays(cv: &mut Canvas<'_>, game: &Game, enh: &DisplayEnh) {
+    let ram = game.ram();
+    if !(enh.dev_hitboxes || enh.dev_xy || enh.dev_hp) {
+        return;
+    }
+    let geometry = game.collision_geometry();
+    for b in &geometry.boxes {
+        let c = match b.kind {
+            Kind::Enemy(_) => RED,
+            Kind::Sword => YELLOW,
+            Kind::Body => GREEN,
+            Kind::Shield => [0xE0, 0x80, 0xFF],
+        };
+        if enh.dev_hitboxes {
+            cv.rect(b.x, b.y, b.w, b.h, c);
+        }
+        if enh.dev_xy && matches!(b.kind, Kind::Body | Kind::Enemy(_)) {
+            cv.cross(b.x, b.y, CYAN);
+        }
+        if enh.dev_hp {
+            if let Kind::Enemy(s) = b.kind {
+                let hp = ram[RAM_ENEMY_HP + usize::from(s)];
+                cv.text(b.x, (b.y - 7).max(0), &format!("{hp}"), RED);
+            }
+        }
+    }
+    if enh.dev_hitboxes && ram[RAM_MODE] == MODE_SIDEVIEW {
+        for [x, y] in geometry.terrain {
+            cv.cross(x, y, CYAN);
+        }
     }
 }
 
@@ -979,6 +936,9 @@ pub struct DisplayFx {
     // Quest timer: frame count the quest started at.
     quest_start: Option<u64>,
     seen_title: bool,
+    // Camera zoom.
+    camera: crate::camera_zoom::CameraState,
+    zoomed: Vec<u8>,
 }
 
 impl DisplayFx {
@@ -1076,9 +1036,16 @@ impl DisplayFx {
         (frame, rec)
     }
 
+    /// Advance the camera one emulated frame (see
+    /// [`crate::camera_zoom::CameraState::step`]).
+    pub fn camera_step(&mut self, game: &Game, enh: &DisplayEnh, margin: u32) {
+        self.camera.step(game, enh.camera_zoom, margin);
+    }
+
     /// Post effects, shake and overlays over the composed frame `rgba`
     /// (`width x height`, `scale` texels per game pixel, `margin` game
-    /// pixels of widescreen margin per side). Returns the finished frame.
+    /// pixels of widescreen margin per side). Returns the finished frame:
+    /// `width x height`, or `out` (`(w, h)`) with the camera zoom applied.
     #[allow(clippy::too_many_arguments)]
     pub fn finish<'a>(
         &'a mut self,
@@ -1089,15 +1056,15 @@ impl DisplayFx {
         margin: u32,
         game: &Game,
         enh: &DisplayEnh,
+        out: Option<(u32, u32)>,
     ) -> &'a [u8] {
         self.out.clear();
         self.out.extend_from_slice(rgba);
         self.post.apply(&mut self.out, width, height, enh);
         let (w, h, s) = (width as usize, height as usize, scale.max(1) as usize);
         let (dx, dy) = shake_offset(self.shake_left);
-        shift_rgba(&mut self.out, w, h, dx * s as i32, dy * s as i32);
+        let quest = self.quest_frames(game);
         if overlays_active(enh) {
-            let quest = self.quest_frames(game);
             let mut cv = Canvas {
                 rgba: &mut self.out,
                 width: w,
@@ -1105,9 +1072,44 @@ impl DisplayFx {
                 scale: s,
                 margin: margin as i32,
             };
-            draw_overlays(&mut cv, game.ram(), game.frame_count(), quest, enh);
+            draw_world_overlays(&mut cv, game, enh);
+            if out.is_none() {
+                draw_screen_overlays(&mut cv, game, game.frame_count(), quest, enh);
+            }
         }
-        &self.out
+        let Some((ow, oh)) = out else {
+            // Geometry follows the same presentation shake as the sprites.
+            shift_rgba(&mut self.out, w, h, dx * s as i32, dy * s as i32);
+            return &self.out;
+        };
+        let (ow, oh) = (ow as usize, oh as usize);
+        self.zoomed.resize(ow * oh * 4, 0);
+        self.camera.render(
+            &self.out,
+            w,
+            h,
+            scale,
+            &mut self.zoomed,
+            ow,
+            oh,
+            game,
+            margin,
+        );
+        // Screen overlays at their normal size, on the output.
+        let k = (oh as f64 / FRAME_H as f64).round().max(1.0) as usize;
+        if overlays_active(enh) {
+            let cols = ow / k;
+            let mut cv = Canvas {
+                rgba: &mut self.zoomed,
+                width: ow,
+                height: oh,
+                scale: k,
+                margin: (cols as i32 - FRAME_W as i32) / 2,
+            };
+            draw_screen_overlays(&mut cv, game, game.frame_count(), quest, enh);
+        }
+        shift_rgba(&mut self.zoomed, ow, oh, dx * k as i32, dy * k as i32);
+        &self.zoomed
     }
 
     /// Frames of shake left (for tests and the title bar).
@@ -1461,35 +1463,10 @@ mod tests {
     }
 
     #[test]
-    fn dev_boxes_from_ram() {
-        let mut ram = [0u8; 0x800];
-        assert!(dev_boxes(&ram).is_empty(), "not side view");
-        ram[RAM_MODE] = MODE_SIDEVIEW;
-        ram[RAM_LINK_SX] = 0x70;
-        ram[RAM_LINK_Y] = 0x80;
-        ram[RAM_LINK_PAGE] = 1;
-        ram[RAM_LINK_X] = 0x10;
-        ram[RAM_LINK_FACING] = 1;
-        ram[RAM_SWORD_Y] = SWORD_RETRACTED;
-        ram[RAM_ENEMY_EXISTS + 2] = 1;
-        ram[RAM_ENEMY_PAGE + 2] = 1;
-        ram[RAM_ENEMY_X + 2] = 0x40;
-        ram[RAM_ENEMY_Y + 2] = 0x90;
-        let b = dev_boxes(&ram);
-        assert_eq!(b.len(), 2, "body + one enemy");
-        assert_eq!(b[0].slot, None);
-        assert_eq!(b[1].slot, Some(2));
-        assert_eq!((b[1].x, b[1].y), (0x70 + 0x30, 0x90));
-        ram[RAM_SWORD_Y] = 0x80;
-        ram[RAM_SWORD_X] = 0x80;
-        assert!(dev_boxes(&ram).iter().any(|b| b.sword));
-    }
-
-    #[test]
     fn overlay_text_draws_only_where_asked() {
         let (w, h) = (256usize, 240usize);
         let mut px = vec![0u8; w * h * 4];
-        let ram = [0u8; 0x800];
+        let game = Game::new();
         let none = DisplayEnh::default();
         assert!(!overlays_active(&none));
         let mut cv = Canvas {
@@ -1499,7 +1476,7 @@ mod tests {
             scale: 1,
             margin: 0,
         };
-        draw_overlays(&mut cv, &ram, 1234, Some(600), &none);
+        draw_overlays(&mut cv, &game, 1234, Some(600), &none);
         assert!(px.iter().all(|&v| v == 0));
         let on = DisplayEnh {
             quest_timer: true,
@@ -1513,7 +1490,7 @@ mod tests {
             scale: 1,
             margin: 0,
         };
-        draw_overlays(&mut cv, &ram, 1234, Some(600), &on);
+        draw_overlays(&mut cv, &game, 1234, Some(600), &on);
         let lit = |x0: usize, x1: usize| {
             (0..8).any(|y| (x0..x1).any(|x| px[(y * w + x) * 4] == WHITE[0]))
         };

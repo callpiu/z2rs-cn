@@ -24,6 +24,12 @@ For a screen with no borders at the sides, pick the widescreen preset that match
 
 Without `--scale`, the window opens at the largest of 3x, 2x or 1x that fits the screen, measured against the screen's size after display scaling, with room left for the title bar and taskbar. On a very small screen it opens below 1x. An HD pack does not make the window bigger.
 
+## Camera zoom
+
+The Enhancements tab and the in-game Graphics tab have a Camera zoom setting. It follows Link and keeps the status bar and boss meter at normal size. Dialogue and menus zoom back out so their text fits. With local co-op, the camera follows the midpoint of both players while they fit in the view.
+
+`--camera-zoom 2` selects 2x zoom. Values from 1 to 4 are accepted, and 1 turns it off. The saved setting is `display_enh.camera_zoom`. `--present-size 2560x1440` sets the exact output size, useful when you want a particular pixel scale from an HD pack.
+
 ## Running from a terminal
 
 ```sh
@@ -66,6 +72,8 @@ There are ten save-state slots. `F6` cycles through them and the digits `1` to
 window title shows ` [SLOT n]` while it is anything other than 0. Each slot is
 a separate `savestate<n>.z2snap` file in the data directory.
 
+New save states hold the whole game, including CPU state, graphics memory, mapper and frame counter. Loading a state saved in another scene restores its graphics as well as its RAM. Older RAM-only state files still load.
+
 ## Command-line flags
 
 Besides `--rom`, `--movie` and `--config`:
@@ -81,6 +89,9 @@ Besides `--rom`, `--movie` and `--config`:
 | `--signal URL` | signalling server (default `ws://127.0.0.1:3536`; the launcher passes `wss://signal.z2rs.com`) |
 | `--net-mode rollback\|lockstep` | online sync mode (default `rollback`; config key `netplay.mode`) |
 | `--net-delay N` | netplay input delay in frames, default 2 (rollback 0 to 3, lockstep 0 to 8) |
+| `--pad-map SPEC` | override controller bindings for this run, for example `South=A,East=B,Start=none` |
+| `--camera-zoom Z` | magnify the gameplay view around Link, from 1 (off) to 4 |
+| `--present-size WxH` | set an exact output and window size, for example `2560x1440` |
 | `--p2-pad INDEX` | pin player 2 to a gamepad by connection order |
 | `--fill-left-clip on\|off` | paint the 8 columns the overworld blanks at x 0 to 7 (default on) |
 | `--fill-right-clip on\|off` | paint the 8 columns the overworld masks at x 248 to 255 (default on) |
@@ -123,6 +134,8 @@ The mapping is positional, like the NES pad, where B sits left of and below A. O
 On macOS, some pads are claimed by Apple's own drivers (the Xbox One S controller over USB or Bluetooth, for example) and report nothing through `gilrs`. z2rs reads those through the GameController framework instead, and they drive player 1. The Retrolink SNES controller and its clones get a mapping fix so the d-pad reads correctly. Pads can be connected and disconnected while the game runs. Inputs with no NES equivalent (second stick, triggers, extra face buttons) are ignored.
 
 Testing status: the mapping, the bit layout (`A,B,Select,Start,Up,Down,Left,Right` = bits 0..7), the deadzone and the hot-plug path are covered by unit tests and code review only. Nobody has tested them on physical gamepads yet, and enumerating several pads at once in particular has not been tried on real hardware. Custom gamepad bindings in the config (`gamepad`, `gamepad_p2`) are honoured, and the defaults are the positional layout above. Keyboard rebinding covers the keys named in the two default tables.
+
+For a one-run override, use `--pad-map South=A,East=B`. Each entry is `PAD=BUTTON`, separated by commas. Pad names include `South`, `East`, `West`, `North`, `Start`, `Select`, `DPadUp`, `DPadDown`, `DPadLeft`, `DPadRight`, `LeftTrigger`, `RightTrigger`, `LeftTrigger2`, `RightTrigger2`, `LeftThumb` and `RightThumb`. NES buttons are `A`, `B`, `Start`, `Select`, `Up`, `Down`, `Left` and `Right`; `none` unbinds a pad button. Names ignore case. Unlisted bindings keep their current values. The override applies to player 1 and player 2's defaults and does not rewrite the config file.
 
 ## Troubleshooting
 

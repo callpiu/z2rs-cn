@@ -1,6 +1,8 @@
 //! `z2-core`: CPU-adjacent core engine logic, typed RAM-map accessors,
 //! and the `GameFacts` exporter.
 
+/// Read-only enemy/NPC/boss observations for whole-image HD actors.
+pub mod actor_visual;
 /// Bank-7 fixed-core ports: reset/NMI/main-loop/input,
 /// MMC1 switching, RNG/timers, PPU update queue, typed mode dispatch.
 /// Gated behind `interp` with the interpreter (trap + bus access).
@@ -215,3 +217,11 @@ pub mod wide_margins;
 /// (display-only `$EF11` observer).
 #[cfg(feature = "interp")]
 pub mod wide_sprites;
+/// WRAM `$6000-$7FFF` access probe for the content memory survey
+/// (`cargo xtask content-survey`; feature `wram-probe`, off by default).
+#[cfg(all(feature = "interp", feature = "wram-probe"))]
+pub mod wram_probe;
+
+/// Read-only collision geometry for developer overlays.
+#[cfg(feature = "interp")]
+pub mod collision_debug;

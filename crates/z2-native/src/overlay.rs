@@ -76,6 +76,7 @@ impl Tab {
                 Group::Abilities,
                 Group::Rando,
                 Group::Cheats,
+                Group::Content,
             ],
             Tab::Graphics => &[Group::Graphics, Group::Dev],
         }
@@ -1237,7 +1238,8 @@ mod tests {
         let mut scale_mode = ScaleMode::Fit;
         let before = Model::capture(&config, &feats, &display, scale_mode, false, Lock::None);
         let mut after = before.clone();
-        after.enhancements = Enhancements::zalia_preset();
+        // The preset button's options, new areas included.
+        after.enhancements = z2_core::enh::Enhancements::zalia_preset();
         after.display_enh = DisplayEnh::zalia_preset();
         after.scale_mode = ScaleMode::Integer;
         after.fast_forward_multiplier = 8;
@@ -1257,8 +1259,14 @@ mod tests {
         );
         assert!(applied.config_changed);
         assert_eq!(applied.fullscreen, Some(true));
-        assert_eq!(*emu.game.enhancements(), Enhancements::zalia_preset());
-        assert_eq!(feats.enhancements, Enhancements::zalia_preset());
+        assert_eq!(
+            *emu.game.enhancements(),
+            z2_core::enh::Enhancements::zalia_preset()
+        );
+        assert_eq!(
+            feats.enhancements,
+            z2_core::enh::Enhancements::zalia_preset()
+        );
         assert_eq!(display.settings().display_enh, DisplayEnh::zalia_preset());
         assert_eq!(display.settings().wide_tiles, 11);
         assert!(feats.record, "widescreen arms the render record");
@@ -1270,7 +1278,10 @@ mod tests {
         config.save_to(&path).unwrap();
         let back = NativeConfig::load_from(&path);
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(back.enhancements, Enhancements::zalia_preset());
+        assert_eq!(
+            back.enhancements,
+            z2_core::enh::Enhancements::zalia_preset()
+        );
         assert_eq!(back.display_enh, DisplayEnh::zalia_preset());
         assert_eq!(back.scale_mode, "integer");
         assert_eq!(back.fast_forward_multiplier, 8);

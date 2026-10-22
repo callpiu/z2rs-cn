@@ -35,6 +35,7 @@
 //! | [`abilities`] | double jump, stab frenzy, sword reach, ... | [`AbilityOpts`] |
 //! | [`rando`] | start loadout, stat scaling, shuffles | [`RandoOpts`] |
 //! | [`cheats`] | invincible, infinite magic/lives, max stats | [`CheatOpts`] |
+//! | [`content`] | new areas (virtual rooms) | [`ContentOpts`] |
 //! | [`display`] | frontend-only effects (data only here) | [`DisplayEnh`] |
 //!
 //! Each group exposes `pub(crate) fn register(game, opts)` (called by
@@ -72,6 +73,12 @@
 
 pub mod abilities;
 pub mod cheats;
+pub mod content;
+pub mod content_areas;
+pub mod content_mem;
+pub mod content_minigames;
+pub mod content_overworld;
+pub mod content_town;
 pub mod display;
 pub mod enemies;
 pub mod fixes;
@@ -86,6 +93,7 @@ use crate::traps::{TrapFn, TrapInfo};
 
 pub use abilities::AbilityOpts;
 pub use cheats::CheatOpts;
+pub use content::ContentOpts;
 pub use display::{DisplayEnh, FlashColor};
 pub use enemies::EnemyOpts;
 pub use fixes::FixesOpts;
@@ -120,6 +128,8 @@ pub struct Enhancements {
     pub rando: RandoOpts,
     /// Cheats.
     pub cheats: CheatOpts,
+    /// New areas (virtual rooms).
+    pub content: ContentOpts,
 }
 
 impl Enhancements {
@@ -175,6 +185,16 @@ impl Enhancements {
             abilities: AbilityOpts::default(),
             rando: RandoOpts::default(),
             cheats: CheatOpts::default(),
+            // ZALiA's new areas; the southern isle and the developer room
+            // stay off.
+            content: ContentOpts {
+                virtual_rooms: true,
+                parapa_annex: true,
+                challenge_rooms: true,
+                minigames: true,
+                hidden_caves: true,
+                ..ContentOpts::default()
+            },
         }
     }
 
@@ -189,6 +209,7 @@ impl Enhancements {
             || self.abilities.is_active()
             || self.rando.is_active()
             || self.cheats.is_active()
+            || self.content.is_active()
     }
 
     /// Alias of [`Self::any_gameplay_active`] (the design doc's name).
@@ -202,7 +223,7 @@ impl Enhancements {
     /// identity leaves an all-off peer's identity unchanged.
     ///
     /// Layout: [`IDENTITY_VERSION`], then for each active group (fixed order)
-    /// a tag byte (`b'T'`, `b'Q'`, `b'F'`, `b'E'`, `b'A'`, `b'R'`, `b'C'`)
+    /// a tag byte (`b'T'`, `b'Q'`, `b'F'`, `b'E'`, `b'A'`, `b'R'`, `b'C'`, `b'N'`)
     /// followed by that group's own encoding (`write_identity`). Inactive
     /// groups contribute nothing, so adding a field to a group only moves the
     /// identity of peers that turn that group on.
@@ -240,6 +261,10 @@ impl Enhancements {
             out.push(b'C');
             self.cheats.write_identity(&mut out);
         }
+        if self.content.is_active() {
+            out.push(b'N');
+            self.content.write_identity(&mut out);
+        }
         out
     }
 
@@ -266,7 +291,11 @@ impl Enhancements {
     /// break the seed's own placement logic. Everything else stays: the
     /// scalers and the palette randomizer rewrite whatever table values the
     /// image holds, and the start loadout detects a new file against the
-    /// image's own beginning values.
+    /// image's own beginning values. The [`content`] group (new areas)
+    /// stays on: at registration it walks the image's own map tables and
+    /// only uses the tables whose spare slot the seed left unreachable
+    /// ([`content::scan`]), which is deterministic per image, so peers on
+    /// the same ROM agree.
     ///
     /// Frontends apply this before [`Game::set_enhancements`] **and** before
     /// computing the netplay identity, so peers agree on what runs.
@@ -287,6 +316,9 @@ impl Enhancements {
         if rom_randomized && self.rando.item_shuffle {
             v.push(ITEM_SHUFFLE_SKIPPED);
         }
+        if rom_randomized && self.content.is_active() {
+            v.push(CONTENT_SKIPPED);
+        }
         v
     }
 }
@@ -295,6 +327,12 @@ impl Enhancements {
 /// ([`Enhancements::for_rom`]).
 pub const ITEM_SHUFFLE_SKIPPED: &str = "enhancements: item shuffle (Randomizer group) skipped: \
      the ROM randomizer already placed the items, and this shuffle assumes the original locations";
+
+/// Note for the new areas on a randomized ROM ([`Enhancements::rom_conflicts`]):
+/// they stay on, but a table whose spare slot the seed uses gets none
+/// ([`content::scan`]).
+pub const CONTENT_SKIPPED: &str = "enhancements: new areas (Content group) on a randomized ROM: \
+     areas whose spare room slot the seed uses are skipped";
 
 // ------------------------------------------------------------ runtime state
 
@@ -331,6 +369,21 @@ pub struct EnhState {
     /// flute-warp cursor, last game mode, rescue-fairy safe ground and
     /// state); `0..5` free.
     pub scratch: [u8; 16],
+    /// [`content`]: current virtual room id + 1 (0 = not in one).
+    pub vroom: u16,
+    /// [`content`]: fallback store of the persistent pool bits whose pool
+    /// map a randomized ROM uses (bit `i` in bit `i % 32` of word `i / 32`;
+    /// save states only, not battery). Unused on the original ROM.
+    pub vroom_items: [u32; 16],
+    /// [`content`]: virtual room id + 1 the next load of its slot enters
+    /// (0 = none); set by the exit hooks and `enter_from_overworld`.
+    pub vroom_pending: u16,
+    /// [`content`]: magic / heart containers (`$0783`, `$0784`) at the end
+    /// of the last frame (container pieces).
+    pub vroom_cont: [u8; 2],
+    /// [`content_minigames`]: the running minigame's state (layout in that
+    /// module's docs; all zero outside a minigame room).
+    pub minigame: [u8; 16],
 }
 
 impl EnhState {
@@ -344,12 +397,19 @@ impl EnhState {
         }
         out.extend_from_slice(&self.flags.to_le_bytes());
         out.extend_from_slice(&self.scratch);
+        out.extend_from_slice(&self.vroom.to_le_bytes());
+        for w in self.vroom_items {
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+        out.extend_from_slice(&self.vroom_pending.to_le_bytes());
+        out.extend_from_slice(&self.vroom_cont);
+        out.extend_from_slice(&self.minigame);
     }
 
     /// Bytes of [`Self::write`] as a fresh vector.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut v = Vec::with_capacity(64);
+        let mut v = Vec::with_capacity(128);
         self.write(&mut v);
         v
     }
@@ -399,6 +459,23 @@ impl EnhState {
         if let Some(b) = take(16)? {
             s.scratch.copy_from_slice(b);
         }
+        if let Some(b) = take(2)? {
+            s.vroom = u16::from_le_bytes([b[0], b[1]]);
+        }
+        for i in 0..s.vroom_items.len() {
+            if let Some(b) = take(4)? {
+                s.vroom_items[i] = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+            }
+        }
+        if let Some(b) = take(2)? {
+            s.vroom_pending = u16::from_le_bytes([b[0], b[1]]);
+        }
+        if let Some(b) = take(2)? {
+            s.vroom_cont.copy_from_slice(b);
+        }
+        if let Some(b) = take(16)? {
+            s.minigame.copy_from_slice(b);
+        }
         Ok(s)
     }
 
@@ -438,6 +515,13 @@ struct SavedPatch {
 pub struct EnhHooks {
     traps: Vec<SavedTrap>,
     patches: Vec<SavedPatch>,
+    /// Addresses whose [`call_original`] is running (innermost last), so a
+    /// chained hook's own `call_original` reaches the hook below it.
+    calling: Vec<u16>,
+    /// [`content`] slot maps and usable pool maps for this image.
+    pub(crate) content: content::Runtime,
+    /// [`content_overworld`] entrances and terrain for this image.
+    pub(crate) overworld: content_overworld::Plan,
 }
 
 impl EnhHooks {
@@ -494,13 +578,36 @@ pub fn prev_trap(game: &Game, addr: u16) -> Option<TrapFn> {
 /// From inside a hook body at `addr`: run what the hook replaced — the
 /// previous trap's body, or, when there was none, the original ROM routine
 /// interpreted until its `RTS` (the hook is bypassed for that one call).
+///
+/// Chains: with several hooks on `addr`, a `call_original` made while an
+/// outer one's is still running reaches the next hook down, so every hook
+/// runs once and the original once.
 pub fn call_original(game: &mut Game, addr: u16) {
-    if let Some(f) = prev_trap(game, addr) {
+    let depth = game
+        .enh_hooks
+        .calling
+        .iter()
+        .filter(|&&a| a == addr)
+        .count();
+    let prev = game
+        .enh_hooks
+        .traps
+        .iter()
+        .rev()
+        .filter(|t| t.addr == addr)
+        .nth(depth)
+        .and_then(|t| t.prev)
+        .map(|t| t.func);
+    game.enh_hooks.calling.push(addr);
+    if let Some(f) = prev {
         f(game);
     } else {
         game.traps.set_untrapped(addr, true);
         game.call_asm(addr);
         game.traps.set_untrapped(addr, false);
+    }
+    if let Some(i) = game.enh_hooks.calling.iter().rposition(|&a| a == addr) {
+        game.enh_hooks.calling.remove(i);
     }
 }
 
@@ -544,6 +651,8 @@ pub fn patch_prg_at(game: &mut Game, bank: u8, cpu_addr: u16, bytes: &[u8]) -> b
 /// Undo every [`hook`] and [`patch_prg`] (latest first). Leaves the options
 /// and [`EnhState`] alone.
 pub fn clear(game: &mut Game) {
+    game.enh_hooks.content = content::Runtime::default();
+    game.enh_hooks.overworld = content_overworld::Plan::default();
     while let Some(t) = game.enh_hooks.traps.pop() {
         match t.prev {
             Some(p) => game
@@ -569,6 +678,11 @@ pub fn clear(game: &mut Game) {
 /// Call it after the default trap groups (and co-op / wide gameplay) are
 /// registered, ideally before `Game::reset`. Never called by verification.
 pub fn apply(game: &mut Game, e: &Enhancements) {
+    if game.enh.content.is_active() {
+        // Painted overworld rows and written slots belong to the old
+        // options: put the originals back before the hooks go.
+        content_overworld::teardown(game);
+    }
     clear(game);
     game.enh = *e;
     game.enh_on = e.any_gameplay_active();
@@ -595,6 +709,9 @@ pub fn apply(game: &mut Game, e: &Enhancements) {
     }
     if e.cheats.is_active() {
         cheats::register(game, &e.cheats);
+    }
+    if e.content.is_active() {
+        content::register(game, &e.content);
     }
 }
 
@@ -625,11 +742,37 @@ pub(crate) fn end_of_frame(game: &mut Game) {
     if e.cheats.is_active() {
         cheats::end_of_frame(game, &e.cheats);
     }
+    if e.content.is_active() {
+        content::end_of_frame(game, &e.content);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chained_hooks_each_run_once_over_the_original() {
+        fn lower(g: &mut Game) {
+            g.ram[0x10] += 1;
+            call_original(g, 0x6000);
+        }
+        fn upper(g: &mut Game) {
+            g.ram[0x11] += 1;
+            call_original(g, 0x6000);
+        }
+        let mut g = Game::new();
+        g.wram[0] = 0xE6; // INC $12
+        g.wram[1] = 0x12;
+        g.wram[2] = 0x60; // RTS
+        hook(&mut g, "lower", None, 0x6000, lower, Some(0));
+        hook(&mut g, "upper", None, 0x6000, upper, Some(0));
+        upper(&mut g);
+        assert_eq!(&g.ram[0x10..0x13], &[1, 1, 1]);
+        assert!(g.enh_hooks.calling.is_empty());
+        clear(&mut g);
+        assert!(g.traps.get(0x6000).is_none());
+    }
 
     #[test]
     fn defaults_are_off() {
@@ -653,7 +796,7 @@ mod tests {
         assert_ne!(other.identity_bytes(), id);
         // Each group on its own produces a distinct, non-empty identity.
         let mut seen = std::collections::HashSet::new();
-        for g in 0..7 {
+        for g in 0..8 {
             let mut e = Enhancements::default();
             match g {
                 0 => e.text.protect_spell_name = true,
@@ -662,7 +805,8 @@ mod tests {
                 3 => e.enemies.barba_aim = true,
                 4 => e.abilities.double_jump = true,
                 5 => e.rando.item_shuffle = true,
-                _ => e.cheats.invincible = true,
+                6 => e.cheats.invincible = true,
+                _ => e.content.virtual_rooms = true,
             }
             assert!(e.any_gameplay_active());
             assert!(seen.insert(e.identity_bytes()));
@@ -706,6 +850,11 @@ mod tests {
         };
         s.timers[3] = 777;
         s.scratch[15] = 9;
+        s.vroom = 3;
+        s.vroom_items[15] = 0x1234_5678;
+        s.vroom_pending = 9;
+        s.vroom_cont = [4, 5];
+        s.minigame[15] = 7;
         let b = s.to_bytes();
         assert_eq!(EnhState::read(&b).unwrap(), s);
         assert_eq!(EnhState::read(&[]).unwrap(), EnhState::default());

@@ -47,6 +47,7 @@ fn layer_background_signature_validation_and_roundtrip() {
     }
     let legacy: z2_render::LayerWhen = serde_json::from_str(r#"{"world":1}"#).unwrap();
     assert!(legacy.background_tile.is_none());
+    assert!(legacy.vroom.is_none());
     assert_eq!(serde_json::to_string(&legacy).unwrap(), r#"{"world":1}"#);
 }
 
@@ -528,6 +529,54 @@ fn sprite_alpha_and_bleed_are_validated() {
     }
 }
 
+/// `when.vroom`: a layer for one virtual room (new areas), or for original
+/// rooms only (`0`), ANDed with the other scene filters.
+#[test]
+fn layer_vroom_filter_matches_virtual_rooms() {
+    use z2_render::SceneView;
+    let p = load(
+        r#"{"version":1,"name":"t","scale":2,"layers":[
+            {"file":"l/a.png","when":{"world":5,"scene":60,"vroom":3}},
+            {"file":"l/a.png","when":{"vroom":0}},
+            {"file":"l/a.png","when":{"world":5}}
+        ]}"#,
+        vec![("l/a.png", solid_png(8, 8, RED))],
+    )
+    .unwrap();
+    let [room3, original, palace] = p.layers() else {
+        panic!("three layers")
+    };
+    assert_eq!(
+        (room3.world, room3.scene, room3.vroom),
+        (Some(5), Some(60), Some(3))
+    );
+    assert_eq!(original.vroom, Some(0));
+    assert_eq!(palace.vroom, None);
+    let at = |scene, vroom| SceneView {
+        world: 5,
+        region: 0,
+        scene,
+        camera_x: 0,
+        vroom,
+    };
+    // Virtual room id 2 (vroom 3) in the Great Palace slot.
+    assert!(room3.matches(Some(&at(60, 3))));
+    assert!(!room3.matches(Some(&at(60, 4))), "another virtual room");
+    assert!(!room3.matches(Some(&at(60, 0))), "the slot's own map");
+    assert!(!room3.matches(Some(&at(59, 3))));
+    assert!(!room3.matches(None));
+    // `0` = original rooms only.
+    assert!(original.matches(Some(&at(1, 0))));
+    assert!(!original.matches(Some(&at(60, 3))));
+    assert!(!original.matches(None), "vroom is a scene filter");
+    // No vroom key: any room, virtual or not (older packs keep working).
+    assert!(palace.matches(Some(&at(60, 3))) && palace.matches(Some(&at(1, 0))));
+    // The key round-trips and is left out when absent.
+    let w: z2_render::LayerWhen = serde_json::from_str(r#"{"vroom":3}"#).unwrap();
+    assert_eq!(w.vroom, Some(3));
+    assert_eq!(serde_json::to_string(&w).unwrap(), r#"{"vroom":3}"#);
+}
+
 #[test]
 fn layers_are_validated_and_resolved() {
     use z2_render::{LayerDepth, SceneView};
@@ -575,6 +624,7 @@ fn layers_are_validated_and_resolved() {
         region: 0,
         scene,
         camera_x: 0,
+        vroom: 0,
     };
     assert!(far.matches(Some(&scene(1, 7))));
     assert!(!far.matches(Some(&scene(1, 8))) && !far.matches(Some(&scene(2, 7))));
@@ -594,6 +644,10 @@ fn layers_are_validated_and_resolved() {
         (
             r#"{"file":"l/far.png","when":{"scene":256}}"#,
             "when.scene 256 out of range",
+        ),
+        (
+            r#"{"file":"l/far.png","when":{"vroom":65536}}"#,
+            "when.vroom 65536 out of range",
         ),
         (
             r#"{"file":"l/far.png","over_tiles":[{"page":7,"tile":75}]}"#,

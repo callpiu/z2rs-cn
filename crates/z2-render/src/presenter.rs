@@ -59,6 +59,9 @@ impl Default for PresentConfig {
 #[derive(Debug)]
 pub struct Presenter {
     actor_clocks: Vec<crate::actors::ActorClock>,
+    /// Emulated `(frame, hz)` for layer drift and animation
+    /// ([`Presenter::set_time`]).
+    time: Option<(u64, f64)>,
     cfg: PresentConfig,
     comp: Compositor,
     /// Indexed widescreen buffer (unused when `margin_tiles == 0`).
@@ -82,6 +85,7 @@ impl Presenter {
         margins.fill_right_clip = cfg.fill_right_clip;
         let mut me = Self {
             actor_clocks: Vec::new(),
+            time: None,
             rgba: vec![0; comp.rgba_len()],
             wide: WideFrame::new(cfg.margin_tiles),
             comp,
@@ -146,11 +150,18 @@ impl Presenter {
     }
 
     /// Advance animation from emulated time, not calls to present. Repainting
-    /// a paused frame does not advance it. Each player has a separate clock;
-    /// action changes and backwards seeks restart that player's clip.
+    /// a paused frame does not advance it. Each actor has a separate clock;
+    /// a clip change, a backwards seek or [`ActorInput::restart`] restarts
+    /// its clip. Each input resolves through its fallbacks
+    /// ([`ActorInput::resolve`]); one without any pack clip keeps its tile
+    /// art. Shown frames are decoded here, on first use.
+    ///
+    /// [`ActorInput::restart`]: crate::actors::ActorInput::restart
+    /// [`ActorInput::resolve`]: crate::actors::ActorInput::resolve
     pub fn set_actors(&mut self, frame: u64, hz: f64, inputs: &[crate::actors::ActorInput<'_>]) {
+        self.set_time(frame, hz);
         self.comp.actors.clear();
-        let Some(pack) = &self.pack else {
+        let Some(pack) = &mut self.pack else {
             self.actor_clocks.clear();
             return;
         };
@@ -158,30 +169,21 @@ impl Presenter {
             self.actor_clocks.clear();
             return;
         }
-        self.actor_clocks.retain(|clock| {
-            inputs.iter().any(|i| {
-                i.id == clock.id
-                    && pack.actor_clips()[clock.clip].character == i.character
-                    && pack.actor_clips()[clock.clip].name == i.clip
+        let resolved: Vec<(&crate::actors::ActorInput<'_>, usize)> = inputs
+            .iter()
+            .take(16)
+            .filter(|i| {
+                (i.oam_mask != 0 || i.margin_mask != 0)
+                    && i.priority_oam < 64
+                    && i.position
+                        .iter()
+                        .all(|v| v.is_finite() && v.abs() <= 8192.0)
             })
-        });
-        for i in inputs.iter().take(16) {
-            if i.oam_mask == 0
-                || i.priority_oam >= 64
-                || !i
-                    .position
-                    .iter()
-                    .all(|v| v.is_finite() && v.abs() <= 8192.0)
-            {
-                continue;
-            }
-            let Some(clip) = pack
-                .actor_clips()
-                .iter()
-                .position(|c| c.character == i.character && c.name == i.clip)
-            else {
-                continue;
-            };
+            .filter_map(|i| i.resolve(pack.actor_library()).map(|clip| (i, clip)))
+            .collect();
+        self.actor_clocks
+            .retain(|clock| resolved.iter().any(|(i, _)| i.id == clock.id));
+        for &(i, clip) in &resolved {
             if !self.actor_clocks.iter().any(|c| c.id == i.id) {
                 self.actor_clocks.push(crate::actors::ActorClock {
                     id: i.id,
@@ -191,23 +193,38 @@ impl Presenter {
                 });
             }
             let clock = self.actor_clocks.iter_mut().find(|c| c.id == i.id).unwrap();
-            if clock.clip != clip || frame < clock.last {
+            if clock.clip != clip || frame < clock.last || (i.restart && frame != clock.last) {
                 clock.clip = clip;
                 clock.began = frame;
             }
             clock.last = frame;
             let age = frame.saturating_sub(clock.began) as f64 / hz;
+            let index = pack.actor_clips()[clip].frame_index(age);
+            if !pack.actor_library_mut().ensure(clip, index, frame) {
+                continue;
+            }
             self.comp.actors.push(crate::actors::ActorInstance {
                 clip,
-                frame: pack.actor_clips()[clip].frame_index(age),
+                frame: index,
                 position: i.position,
                 flip_h: i.flip_h,
                 oam_mask: i.oam_mask,
+                margin_mask: i.margin_mask,
                 priority_oam: i.priority_oam,
                 behind: false,
+                flash_palette: i.flash_palette.map(|p| p & 3),
             });
         }
         self.comp.actors.sort_by_key(|i| i.priority_oam);
+    }
+
+    /// The emulated frame being presented and the frame rate, for layer
+    /// `drift_x`/`drift_y` and animated `frames`. [`Presenter::set_actors`]
+    /// sets it too. Time follows emulated frames, not presents: a paused game
+    /// keeps its layers still, and a loaded state or a seek lands on the same
+    /// picture as the original run.
+    pub fn set_time(&mut self, frame: u64, hz: f64) {
+        self.time = (hz.is_finite() && hz > 0.0).then_some((frame, hz));
     }
 
     /// Override the display palette (a pack's own palette wins when set).
@@ -322,6 +339,7 @@ impl Presenter {
                 },
                 palette: &palette,
                 scene: self.scene,
+                time: self.time,
             },
             &mut self.rgba,
         )?;

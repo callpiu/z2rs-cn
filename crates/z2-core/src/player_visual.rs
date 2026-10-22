@@ -15,6 +15,14 @@ pub struct PlayerVisual {
     pub priority_oam: u8,
 }
 
+/// The item-hold pose. A pickup (`$E53D`) starts the `$049C` countdown at
+/// `$70` and stores the item id in `$049D`; bank 0 `$9341` counts the timer
+/// down. `$049D` is never cleared, so it alone means "has picked something
+/// up", not "is holding it now".
+fn holding_item(get: &impl Fn(usize) -> u8) -> bool {
+    get(0x049C) != 0
+}
+
 fn action(get: impl Fn(usize) -> u8) -> &'static str {
     if get(0x0494) != 0 {
         return "death";
@@ -25,7 +33,7 @@ fn action(get: impl Fn(usize) -> u8) -> &'static str {
     if get(0x050C) != 0 {
         return "hurt";
     }
-    if get(0x049C) != 0 || get(0x049D) != 0 {
+    if holding_item(&get) {
         return "item_get";
     }
     match get(0x0080) {
@@ -86,10 +94,12 @@ impl Game {
                     id: 0,
                     character: "link",
                     clip,
-                    // Two 8x16 OAM cells; the first cell's Y is one less than
-                    // its displayed row. The pack supplies a 16-pixel-tall map rig.
+                    // `$8726` draws the map Link as one 8x16 cell at `$0203`
+                    // (slot 1 at +8 is the blank tile `$F5`), so the body is
+                    // centred at +4. The cell's Y is one less than its
+                    // displayed row. The pack supplies a 16-pixel-tall map rig.
                     position: [
-                        f32::from(self.ram[0x0203]) + 8.0,
+                        f32::from(self.ram[0x0203]) + 4.0,
                         f32::from(self.ram[0x0200]) + 17.0,
                     ],
                     flip_h: false,
@@ -128,17 +138,17 @@ impl Game {
                     clip
                 }
             },
-            position: [f32::from(get(0x00CC)) + 8.0, f32::from(get(0x0029)) + 32.0],
+            // $CC is the original player metasprite origin. Its body
+            // cells start at +8 and +16, so the feet are centred at +16.
+            // +8 is the body's left edge, not its ground pivot.
+            // Mirroring a trimmed actor frame must keep this ground anchor.
+            position: [f32::from(get(0x00CC)) + 16.0, f32::from(get(0x0029)) + 32.0],
             flip_h: get(0x009F) == 2,
             // Keep the game's held item visible above the raised hand; the
             // body rig replaces weapon cells only while Link carries his sword.
             oam_mask: slots
                 .iter()
-                .take(if get(0x049C) != 0 || get(0x049D) != 0 {
-                    6
-                } else {
-                    8
-                })
+                .take(if holding_item(&get) { 6 } else { 8 })
                 .fold(0, |mask, s| mask | (1u64 << s)),
             priority_oam: priority,
         };
@@ -203,7 +213,7 @@ mod tests {
             panic!("one map player")
         };
         assert_eq!(v.clip, "overworld_walk_left");
-        assert_eq!(v.position, [128.0, 116.0]);
+        assert_eq!(v.position, [124.0, 116.0]);
         assert_eq!(v.oam_mask, 3);
         assert!(!v.flip_h);
         assert_eq!(game.ram, before);
@@ -238,12 +248,20 @@ mod tests {
         );
         assert_eq!(
             (p2.character, p2.clip, p2.position),
-            ("link_red", "down_thrust_hold", [88.0, 132.0])
+            ("link_red", "down_thrust_hold", [96.0, 132.0])
         );
         assert_eq!(p1.oam_mask & p2.oam_mask, 0);
         game.ram[0x049C] = 1;
         let v = game.player_visuals()[0].unwrap();
         assert_eq!(v.clip, "item_get");
         assert_eq!(v.oam_mask & ((1 << 8) | (1 << 9)), 0);
+        // The timer ran out: `$049D` keeps the last item id, Link walks again.
+        game.ram[0x049C] = 0;
+        game.ram[0x049D] = 5;
+        game.ram[0x0080] = 0;
+        game.ram[0x0070] = 0x10;
+        let v = game.player_visuals()[0].unwrap();
+        assert_eq!(v.clip, "walk");
+        assert_ne!(v.oam_mask & (1 << 9), 0);
     }
 }

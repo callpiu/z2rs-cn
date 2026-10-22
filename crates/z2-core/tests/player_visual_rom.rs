@@ -88,6 +88,34 @@ fn clips(g: &mut Game, n: usize, input: u8) -> Vec<&'static str> {
 }
 
 #[test]
+fn actor_ground_anchor_matches_original_body_in_both_facings() {
+    let Some(mut g) = to_gameplay("actor_ground_anchor") else {
+        return;
+    };
+    for direction in [RIGHT, 0x40] {
+        step_n(&mut g, 8, direction);
+        step_n(&mut g, 50, 0);
+        let visual = g.player_visuals()[0].unwrap();
+        let body: Vec<_> = (2..8)
+            .map(|slot| &g.oam[slot * 4..slot * 4 + 4])
+            .filter(|cell| cell[0] < 0xf0)
+            .collect();
+        let left = body.iter().map(|c| c[3]).min().unwrap();
+        let right = body.iter().map(|c| c[3]).max().unwrap();
+        let bottom = body.iter().map(|c| c[0]).max().unwrap();
+        assert_eq!(
+            visual.position,
+            [
+                (f32::from(left) + f32::from(right) + 8.0) / 2.0,
+                f32::from(bottom) + 16.0
+            ],
+            "the HD pivot follows the original body cells"
+        );
+        assert_eq!(visual.flip_h, direction == 0x40);
+    }
+}
+
+#[test]
 fn standing_stab_then_crouch_lets_link_stand_up() {
     let Some(mut g) = to_gameplay("standing_stab_then_crouch") else {
         return;

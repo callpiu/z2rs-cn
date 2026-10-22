@@ -58,7 +58,7 @@ A pack can set `"sprite_alpha": "art"` in `pack.json`. A replaced sprite then ta
 
 ## Actor animations
 
-A pack can also replace Link's whole body with its own animation frames instead of tile by tile. `actor_clips[]` in `pack.json` names a character, a clip, a frame rate and a list of transparent PNG frames with a pivot each. While a clip plays, the renderer draws that one image where the game draws Link, so poses that share a CHR tile no longer show seams. Tile replacements keep working for everything else, and a character or clip the pack leaves out falls back to the tile art.
+A pack can also replace the whole body of Link, a side-view enemy, a boss or a townsperson with its own animation frames instead of tile by tile. `actor_clips[]` in `pack.json` names a character, a clip, a frame rate and a list of transparent PNG frames with a pivot each. While a clip plays, the renderer draws that one image where the game draws that character, so poses that share a CHR tile no longer show seams. Tile replacements keep working for everything else, and a character or clip the pack leaves out falls back to the tile art.
 
 ```json
 "actor_clips": [{
@@ -73,15 +73,56 @@ A pack can also replace Link's whole body with its own animation frames instead 
 }]
 ```
 
-The renderer draws each frame in pack pixels at the pack's scale and does not resize it. `pivot` is the point in each frame, measured from its top left corner, that lands on the same spot of Link's skeleton every frame; it may lie outside the image. Keep the pivots your export tool wrote rather than centering each crop. In side view that spot is Link's feet; on the overworld map it is the two 8x16 sprite cells of the original, so author map clips at half the side-view height. Do not bake jump travel or knockback into the frames, because the game already moves Link.
+The renderer draws each frame in pack pixels at the pack's scale and does not resize it. `pivot` is the point in each frame, measured from its top left corner, that lands on the same spot of Link's skeleton every frame; it may lie outside the image. Keep the pivots your export tool wrote rather than centering each crop. In side view that spot is Link's feet; on the overworld map it is the bottom center of the single visible 8x16 sprite cell, so author map clips at half the side-view height. Do not bake jump travel or knockback into the frames, because the game already moves Link.
 
 `character` is `link` for player 1 and `link_red` for player 2. The side-view clip names are `idle`, `walk`, `attack_windup`, `attack`, `crouch_idle`, `crouch_attack`, `jump_rise`, `jump_apex`, `fall`, `jump_attack`, `up_thrust_hold`, `down_thrust_hold`, `hurt`, `death`, `fairy_fly` and `item_get`. Player 1 also uses `cast_spell`, `crystal_place` and `victory`. On the overworld the names are `overworld_walk_right`, `overworld_walk_left`, `overworld_walk_down`, `overworld_walk_up` and the four `overworld_idle_*` clips; player 2 is not drawn on the overworld in co-op, so it has no map clips. A pack may store clips under other names, but the game never picks them. The sword windup is its own state, so a thrust clip should start with the blade already out.
 
 A clip's time comes from emulated frames at 60.0988 Hz, so a paused game holds the pose. Changing action or seeking backwards restarts the clip. `looped` defaults to `false`, which holds the last frame until the action changes. The original sprites still decide visibility, injury blinking, priority and what hides behind the background. Held items and sword beams stay separate sprites and come from the sheets.
 
-The frame rate must be between 1 and 240, a pack may hold at most 512 clips, each with 1 to 4096 frames, and a frame PNG has the same 4096 pixel edge limit as a sheet. Alpha is on or off, as for sheets. Every frame is kept decoded in memory, up to 512 MiB in all. `cargo xtask hdpack check` validates the files and reports the frame count of each clip.
+The frame rate must be between 1 and 240, a pack may hold at most 4096 clips, each with 1 to 4096 frames, and a frame PNG has the same 4096 pixel edge limit as a sheet. Alpha is on or off, as for sheets. Frames are decoded when first shown and cached up to 512 MiB; characters used least recently give up their decoded frames when the cache fills. No single character may exceed that decoded budget. Compressed actor PNG files may total up to 1 GiB. `cargo xtask hdpack check` validates the files and reports the frame count of each clip.
 
 A pack that uses `actor_clips` needs z2rs 0.5.1 or newer. Older builds ignore keys they do not know, so they load the pack without an error and draw Link from the sheets.
+
+### Enemy and townsperson keys
+
+Enemy keys have the form `enemy_<group>_<id>`, with a two-digit lowercase hexadecimal object id. Townspeople use `npc_b3_<id>`. The group identifies the area's enemy table:
+
+| Group | Areas |
+|---|---|
+| `b1` | West Hyrule and Death Mountain |
+| `b2` | East Hyrule and Maze Island |
+| `b3` | towns, using the `npc` prefix |
+| `b4` | palaces 1, 2 and 5 |
+| `b4b` | palaces 3, 4 and 6 |
+| `b5` | Great Palace |
+
+For example, `enemy_b1_04` is a Bot, `enemy_b1_14` is an orange Moblin, `enemy_b4_20` is Horsehead and `npc_b3_0f` is a wise man. The observer adds qualifiers where one id has several appearances: `enemy_b4_21_p2` is Helmethead, `enemy_b4_21_p5` is Gooma, and `npc_b3_1d_34` is a child. A qualified key takes precedence over the plain key when a pack supplies both.
+
+The available clips depend on the character. Use the `alias()` table and clip selection in `crates/z2-core/src/actor_visual.rs`, or run the native headless build with `--dump-actors actors.jsonl` to inspect characters in a replay. Author enemy frames facing right; the renderer mirrors them when needed. Character pivots follow the original drawn body or collision geometry. Barba's pivot belongs under his head, with the neck extending below it. Actors drawn outside the NES window use the same animation system in widescreen.
+
+Native developer overlays can show the game's collision boxes and terrain probes, so you can check the art's placement against gameplay. Moving the art or its pivot never moves those collisions.
+
+### Animated scenery and new rooms
+
+A layer can use `frames` instead of `file` and loop those PNGs at `fps`. Every frame must have the same dimensions. Frame rates range from 1 to 240, with at most 256 frames in one layer. `drift_x` and `drift_y` move the layer at a constant speed in NES pixels per second; positive values move right and down. Horizontal drift can wrap with `repeat_x`.
+
+```json
+"layers": [{
+  "frames": ["water/0.png", "water/1.png", "water/2.png"],
+  "fps": 6,
+  "x": 0,
+  "y": 208,
+  "repeat_x": true,
+  "drift_x": -6,
+  "when": { "world": 0, "region": 0, "scene": 12 }
+}]
+```
+
+Animation and drift follow emulated time. Pausing holds them still, and loading a state or seeking returns to the picture for that game frame. The pack checker checks animation rates, dimensions and drift ranges.
+
+Layers for optional new areas can add `when.vroom`. `0` matches only original rooms; a positive value matches virtual room id plus one. Omit it to match either kind of room. Virtual room ids belong to the authored area data and can change between builds, so check the current id in a capture before writing a filter.
+
+Enemy and NPC animations, animated scenery and virtual-room filters require z2rs 0.6.0 or newer. Older builds ignore keys they do not recognize, which can leave original sprites visible or put a scenery layer in the wrong room.
 
 ## How packs work
 
@@ -98,5 +139,5 @@ These apply to both the desktop app and the browser build.
 - A background cell stays inside its 8x8 tile, and a sprite reaches at most 8 NES pixels past its box (`bleed`, with `"sprite_alpha": "art"`). Without that key, replaced sprites are also cut to their original opaque pixels. Art that belongs to no tile goes in a layer.
 - Each tile identity has one cell. Every place the game draws that tile in those colours shows the same art. A layer with `over_tiles` can vary a repeated tile by position.
 - Greyscale lines, lines with a mid-line `$2001` or palette write, and lines where fine X changed mid-line keep the original art, because the slot-to-pixel mapping doesn't hold for the whole line. In practice that is the row under the status bar and effects such as the palace-entry fade.
-- Tile replacements are still images. Only the player can be animated, through `actor_clips`. There are no per-scanline palette effects.
+- Tile replacements are still images. Players, enemies, bosses and townspeople can animate through `actor_clips`, and scenery layers can use frame lists. There are no per-scanline palette effects.
 - Layers are the most expensive part of a pack. The worst case (every tile replaced plus three layers) takes about 13.5 ms a frame at 4x widescreen on an Apple Silicon Mac, which still fits a 60 Hz frame. A pack without layers takes about 2 ms.

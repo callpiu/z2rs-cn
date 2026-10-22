@@ -109,6 +109,9 @@ pub struct DisplayEnh {
     pub dev_hp: bool,
     /// Draw the frame counter.
     pub dev_framecount: bool,
+    /// Camera zoom of the gameplay view around Link, `1.0..=4.0` (`1` =
+    /// off). Presentation only: the status bar stays at its normal size.
+    pub camera_zoom: f32,
 }
 
 impl Default for DisplayEnh {
@@ -130,6 +133,7 @@ impl Default for DisplayEnh {
             dev_xy: false,
             dev_hp: false,
             dev_framecount: false,
+            camera_zoom: 1.0,
         }
     }
 }
@@ -186,6 +190,11 @@ impl DisplayEnh {
         self.blur = c(self.blur, 0.0, 1.0);
         self.music_volume = self.music_volume.min(MAX_VOLUME);
         self.sfx_volume = self.sfx_volume.min(MAX_VOLUME);
+        self.camera_zoom = if self.camera_zoom.is_nan() {
+            1.0
+        } else {
+            self.camera_zoom.clamp(1.0, 4.0)
+        };
         self
     }
 }

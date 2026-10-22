@@ -9,8 +9,8 @@
 // (for the online part) and the playwright npm module (make netplay-e2e-setup).
 //
 // Scenes are loaded the way README.md describes: take the
-// page's own Z2WEB01 snapshot, patch the scene registers and game mode 0 into
-// its RAM image, fix the CRC32 and restore it, so the game's own loader runs.
+// page's own Z2GS snapshot, patch the scene registers and game mode 0 into
+// its RAM image and restore it, so the game's own loader runs.
 // Pads are then stepped deterministically with z2.ext.stepCoop.
 //
 // Knobs: Z2_MOVIE (an .fm2; default $Z2_CORPUS/movies/warpless.fm2, only used
@@ -99,9 +99,18 @@ async function loadScene(page, pokes) {
       return (crc ^ 0xFFFFFFFF) >>> 0;
     };
     const blob = new Uint8Array(window.z2.snapshot());
-    const ram = 8 + 2 + 8 + 4; // magic, version, frame count, RAM length
+    const magic = new TextDecoder().decode(blob.subarray(0, 4));
+    const wholeGame = magic === 'Z2GS';
+    if (!wholeGame && new TextDecoder().decode(blob.subarray(0, 8)) !== 'Z2WEB001') {
+      throw new Error('Unrecognized snapshot format');
+    }
+    // Z2GS: 4-byte magic + u16 version, then 2 KiB RAM.
+    // Legacy Z2WEB01: 8-byte magic + u16 version + u64 frame + u32 RAM length.
+    const ram = wholeGame ? 6 : 8 + 2 + 8 + 4;
     for (const [addr, val] of list) blob[ram + addr] = val;
-    new DataView(blob.buffer, blob.byteOffset).setUint32(blob.length - 4, crc32(blob.subarray(0, blob.length - 4)), true);
+    if (!wholeGame) {
+      new DataView(blob.buffer, blob.byteOffset).setUint32(blob.length - 4, crc32(blob.subarray(0, blob.length - 4)), true);
+    }
     window.z2.restore(blob);
   }, pokes);
 }

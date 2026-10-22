@@ -385,7 +385,8 @@ fn sideview_scene_reads_identity_and_camera() {
             world: 1,
             region: 2,
             scene: 7,
-            camera_x: 352
+            camera_x: 352,
+            vroom: 0
         })
     );
 

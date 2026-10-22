@@ -10,6 +10,7 @@
 //! - movie/corpus tooling.
 //! - RAM-map/facts export.
 
+mod content_survey;
 mod corpus;
 mod coverage;
 mod diag;
@@ -35,6 +36,7 @@ fn usage() -> String {
          \x20   probe      sub-frame PPU timing probe, oracle vs game\n\
      \x20   extract    extract assets.bin from $Z2_ROM\n\
      \x20   hdpack     HD-pack tooling: template sheets from CHR, pack check\n\
+     \x20   content-survey  WRAM / map-slot / progress-bit facts (README.md)\n\
      \x20   corpus     mint labelled snapshots from movies\n\
      \x20   facts      export game facts (not yet implemented)\n\
      \x20   help       print this message\n"
@@ -75,6 +77,10 @@ fn main() -> ExitCode {
         Some("fuzz") => {
             let rest: Vec<String> = args.collect();
             ExitCode::from(fuzz::run(&rest) as u8)
+        }
+        Some("content-survey") => {
+            let rest: Vec<String> = args.collect();
+            ExitCode::from(content_survey::run(&rest) as u8)
         }
         Some("corpus" | "movie") => {
             let rest: Vec<String> = args.collect();

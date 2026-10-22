@@ -7,11 +7,13 @@ You bring your own ROM. Nothing from the original game is distributed here. [PRO
 On top of the original game, z2rs adds a few optional extras:
 
 - widescreen, with real scenery in the margins instead of a stretched picture
-- HD graphics packs, so you can repaint tiles and sprites at 2x to 8x
+- HD graphics packs, with tiles at 2x to 8x, whole-character animation for Link, enemies and townspeople, and animated scenery
 - two-player co-op with a second Link, on one machine or online
 - save states, fast-forward, movie playback and gamepad support
 - a randomizer that builds a new game from your ROM, with shuffled or generated overworlds, palaces, items, enemies and spells
 - optional gameplay and display changes, many inspired by HoverBat's ZALiA remake, with an in-game options menu
+- optional new areas: Parapa Annex, challenge rooms, hidden caves, two minigames, and Dark Isle with Grimhollow and an eighth palace
+- camera zoom that follows Link while keeping the status bar at its normal size
 
 Release announcement: [Moddable Zelda 2 PC / Web port with Online Multiplayer Co-op and Widescreen Released](https://x.com/troygentic/status/2101572848506573135). Chat is on [Discord](https://discord.gg/buZrPenm6K).
 

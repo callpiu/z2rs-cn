@@ -1,16 +1,12 @@
 //! Snapshot (save-state) codec for the web frontend.
 //!
-//! Two formats:
+//! Compatibility readers for two older RAM-only formats. New saves use
+//! [`z2_core::state::GameState`] (`Z2GS`), which captures the whole game.
 //!
-//! * **`Z2WEB01`** — the tab's own save-state format, emitted by
-//!   [`WebSnapshot::encode`] and accepted by [`WebSnapshot::decode`]. It
-//!   carries the live [`z2_core::game::Game`] memory images (`ram`, `wram`).
-//!   The interpreter's 6502 register file, mapper shift state, PPU/APU
-//!   models and the frame counter are **not** captured (the engine exposes
-//!   no state import — see `tools/xtask/src/verify.rs`: `--dut game` with
-//!   `--snapshot` is rejected for the same reason), so a restored state
-//!   resumes deterministically only from the next reset boundary. The JS
-//!   side persists these blobs in IndexedDB save slots (see `site/app.js`).
+//! * **`Z2WEB01`** is emitted by [`WebSnapshot::encode`] and accepted by
+//!   [`WebSnapshot::decode`]. It carries RAM and WRAM plus a saved frame
+//!   number, but importing it only restores the memory images. CPU, mapper,
+//!   PPU and the live frame counter stay as they were before the import.
 //! * **`Z2SNAP01`** — the `z2-verify` labelled-snapshot corpus format
 //!   (magic `Z2SNAP01`, little-endian fields, trailing CRC32).
 //!   [`import_corpus_snapshot`] is a decode-only interop reader for it: it

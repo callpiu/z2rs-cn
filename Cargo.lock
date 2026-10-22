@@ -6959,6 +6959,7 @@ dependencies = [
  "z2-assets",
  "z2-core",
  "z2-ppu",
+ "z2-rando",
  "z2-render",
  "z2-verify",
 ]
@@ -7017,11 +7018,20 @@ name = "z2-assets"
 version = "0.1.0"
 
 [[package]]
+name = "z2-content"
+version = "0.1.0"
+dependencies = [
+ "z2-assets",
+ "z2-rando",
+]
+
+[[package]]
 name = "z2-core"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "z2-content",
  "z2-ppu",
  "z2-verify",
 ]

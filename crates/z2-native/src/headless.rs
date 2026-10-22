@@ -31,7 +31,7 @@ use z2_core::facts::Game;
 use z2_core::ram::Ram;
 
 /// Parsed `--headless` invocation.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct HeadlessArgs {
     /// INTERIM snapshot path: a raw 2048-byte NES CPU-RAM image, copied
     /// into the `Game`'s RAM before stepping (WRAM starts zeroed — the
@@ -60,6 +60,12 @@ pub struct HeadlessArgs {
     /// (same encoder as [`Self::dump_frame`]). Parsed by
     /// [`parse_dump_at`] once the run starts.
     pub dump_at: Option<String>,
+    /// `--dump-actors PATH`: JSON Lines alignment records
+    /// ([`z2_core::actor_visual::actor_report`]): one per `--dump-at` frame,
+    /// one every `--actors-every` frames, and the final frame.
+    pub dump_actors: Option<String>,
+    /// `--actors-every N`: also record actors every `N` stepped frames.
+    pub actors_every: Option<usize>,
     /// ROM path. Explicit `--rom` wins; else `$Z2_ROM`; with neither, the
     /// run uses the synthetic no-cartridge `Game`.
     pub rom: Option<String>,
@@ -119,6 +125,10 @@ pub struct HeadlessArgs {
     /// `--display-enh-json JSON|@PATH`, kept as the validated JSON text
     /// (`DisplayEnh` holds floats, and this struct is `Eq`).
     pub display_enh_json: Option<String>,
+    /// `--camera-zoom Z` (overrides `camera_zoom` in `--display-enh-json`).
+    pub camera_zoom: Option<f32>,
+    /// `--present-size WxH`: dump frames at exactly this size.
+    pub present_size: Option<(u32, u32)>,
 }
 
 impl HeadlessArgs {
@@ -156,8 +166,18 @@ impl HeadlessArgs {
                 .display_enh_json
                 .as_deref()
                 .and_then(|j| z2_core::enh::DisplayEnh::from_json(j).ok())
-                .unwrap_or_default()
+                .map(|mut d| {
+                    if let Some(z) = self.camera_zoom {
+                        d.camera_zoom = z;
+                    }
+                    d
+                })
+                .unwrap_or_else(|| z2_core::enh::DisplayEnh {
+                    camera_zoom: self.camera_zoom.unwrap_or(1.0),
+                    ..Default::default()
+                })
                 .clamped(),
+            output_size: self.present_size,
         }
     }
 
@@ -186,6 +206,11 @@ usage: z2-native --headless [--snapshot S] [--movie M] [--frames N] [--dump fact
   --dump-frame P  write final framebuffer PNG here (display palette, std-only encoder)
   --dump-at L,P   after each 1-based frame in LIST write PREFIX N .png
                   (`450,472,palace` writes palace450.png + palace472.png)
+  --dump-actors P write JSON Lines of player/enemy actor anchors, clips, OAM
+                  boxes and collision boxes: each --dump-at frame, every
+                  --actors-every N frames, and the final frame
+  --actors-every N
+                  also record --dump-actors every N stepped frames
   --widescreen P  widescreen margins: off | 16:10 | 16:9 | 21:9 | N tiles per side (0-20)
   --dump-wide P   write the composed widescreen PNG here (needs a ROM for CHR;
                   implies --widescreen 16:9 when that flag is absent)
@@ -220,6 +245,12 @@ usage: z2-native --headless [--snapshot S] [--movie M] [--frames N] [--dump fact
                   applies with --movie too). See README.md
   --display-enh-json J
                   display-only enhancements as JSON (inline or @PATH)
+  --camera-zoom Z magnify the gameplay view around Link, 1 (off) to 4; with
+                  it (or --present-size) --dump-at writes the presented RGBA
+                  frame (--hd-pack, --hd-scale, --widescreen, camera) instead
+                  of the 256x240 indexed one
+  --present-size WxH
+                  present at exactly W x H (H/240 px per NES line)
   --help          print this text
 exit codes: 0 ran/help, 2 usage error, 3 reserved (was: gated on oracle/PPU), 4 I/O error";
 
@@ -230,7 +261,7 @@ exit codes: 0 ran/help, 2 usage error, 3 reserved (was: gated on oracle/PPU), 4 
 /// once per process, at startup, and immediately destructured — boxing it
 /// would trade a pointless allocation for a size difference nothing pays for.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ParseOutcome {
     /// No `--headless` flag: the caller should launch the GUI.
     NotHeadless,
@@ -270,6 +301,14 @@ pub fn parse_headless_args(argv: &[String]) -> Result<ParseOutcome, String> {
             "--dump" => args.dump_facts = Some(value_of(&mut it, "--dump")?),
             "--dump-frame" => args.dump_frame = Some(value_of(&mut it, "--dump-frame")?),
             "--dump-at" => args.dump_at = Some(value_of(&mut it, "--dump-at")?),
+            "--dump-actors" => args.dump_actors = Some(value_of(&mut it, "--dump-actors")?),
+            "--actors-every" => {
+                let raw = value_of(&mut it, "--actors-every")?;
+                args.actors_every =
+                    Some(raw.parse().ok().filter(|&n: &usize| n > 0).ok_or_else(|| {
+                        format!("--actors-every expects a positive frame count, got '{raw}'")
+                    })?);
+            }
             "--rom" => args.rom = Some(value_of(&mut it, "--rom")?),
             "--widescreen" => {
                 let raw = value_of(&mut it, "--widescreen")?;
@@ -361,6 +400,14 @@ pub fn parse_headless_args(argv: &[String]) -> Result<ParseOutcome, String> {
                         .map_err(|e| format!("{e}\n{HEADLESS_USAGE}"))?,
                 );
             }
+            "--camera-zoom" => {
+                let raw = value_of(&mut it, "--camera-zoom")?;
+                args.camera_zoom = Some(crate::app::parse_camera_zoom(&raw)?);
+            }
+            "--present-size" => {
+                let raw = value_of(&mut it, "--present-size")?;
+                args.present_size = Some(crate::app::parse_present_size(&raw)?);
+            }
             "--display-enh-json" => {
                 let raw = value_of(&mut it, "--display-enh-json")?;
                 let d = crate::app::parse_display_enh_arg(&raw)
@@ -430,6 +477,13 @@ struct FrameDumps {
     targets: Vec<usize>,
     prefix: String,
     written: Vec<String>,
+    /// `--dump-actors` records (`None` when not requested).
+    actors: Option<Vec<String>>,
+    actors_every: Option<usize>,
+    /// With `--camera-zoom` / `--present-size`: the windowed present path,
+    /// advanced every stepped frame (so the camera moves as in play), whose
+    /// RGBA output the `--dump-at` frames are.
+    display: Option<crate::app::Display>,
 }
 
 impl FrameDumps {
@@ -439,6 +493,9 @@ impl FrameDumps {
             targets: Vec::new(),
             prefix: String::new(),
             written: Vec::new(),
+            actors: None,
+            actors_every: None,
+            display: None,
         }
     }
 
@@ -453,6 +510,9 @@ impl FrameDumps {
                         targets,
                         prefix,
                         written: Vec::new(),
+                        actors: None,
+                        actors_every: None,
+                        display: None,
                     })
             }
         }
@@ -461,11 +521,28 @@ impl FrameDumps {
     /// After `count` frames stepped (1-based), write the PNG if `count` is
     /// a target.
     fn observe(&mut self, count: usize, emu: &mut crate::app::Emu) -> Result<(), HeadlessError> {
-        if !self.targets.contains(&count) {
+        let target = self.targets.contains(&count);
+        if let Some(actors) = &mut self.actors {
+            if target || self.actors_every.is_some_and(|n| count.is_multiple_of(n)) {
+                actors.push(z2_core::actor_visual::actor_report(&emu.game).to_string());
+            }
+        }
+        if let Some(d) = &mut self.display {
+            d.update_actor_animations(&emu.game);
+        }
+        if !target {
             return Ok(());
         }
         let path = format!("{}{count}.png", self.prefix);
-        let png = encode_frame_png(emu.game.frame_indexed());
+        let png = match &mut self.display {
+            Some(d) => {
+                let (w, h) = d.size();
+                let rgba = d.present(&emu.game).map_err(HeadlessError::Usage)?;
+                z2_render::encode_png_rgba(w, h, rgba, &[])
+                    .map_err(|e| HeadlessError::Usage(format!("--dump-at: encode PNG: {e}")))?
+            }
+            None => encode_frame_png(emu.game.frame_indexed()),
+        };
         std::fs::write(&path, png).map_err(HeadlessError::Io)?;
         self.written.push(path);
         Ok(())
@@ -647,6 +724,16 @@ pub fn run_headless(args: &HeadlessArgs) -> Result<HeadlessReport, HeadlessError
     // -- step through the shared primitive (never duplicated here) ---------
     let want = usize::try_from(args.frames).unwrap_or(usize::MAX);
     let mut dumps = FrameDumps::parse(args.dump_at.as_ref())?;
+    if args.dump_actors.is_some() {
+        dumps.actors = Some(Vec::new());
+        dumps.actors_every = args.actors_every;
+    }
+    if args.camera_zoom.is_some() || args.present_size.is_some() {
+        // `--dump-at` frames are then the presented RGBA (pack, widescreen,
+        // scale and camera), not the 256x240 indexed frame.
+        dumps.display =
+            Some(crate::app::Display::new(display_settings.clone()).map_err(HeadlessError::Usage)?);
+    }
     let mut stepped: usize = 0;
     if track.is_empty() {
         stepped += step_blank(&mut emu, want, args, &mut dumps)?;
@@ -796,6 +883,14 @@ pub fn run_headless(args: &HeadlessArgs) -> Result<HeadlessReport, HeadlessError
         report.coop_path = Some(path.clone());
     }
     report.dump_at_paths = std::mem::take(&mut dumps.written);
+    if let (Some(path), Some(mut lines)) = (&args.dump_actors, dumps.actors.take()) {
+        let last = z2_core::actor_visual::actor_report(&emu.game).to_string();
+        if lines.last() != Some(&last) {
+            lines.push(last);
+        }
+        lines.push(String::new());
+        std::fs::write(path, lines.join("\n")).map_err(HeadlessError::Io)?;
+    }
     // Interpreter health (see Game::exec_errors): nonzero faults mean the
     // run wedged somewhere — the frame dumps above are frozen states.
     match emu.game.last_exec_error {
@@ -1403,6 +1498,57 @@ mod tests {
             &bytes[0..8],
             &[137, 80, 78, 71, 13, 10, 26, 10],
             "PNG magic"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--dump-actors` writes one JSON line per `--dump-at` frame, per
+    /// `--actors-every` step, and the final frame.
+    #[test]
+    fn dump_actors_writes_json_lines() {
+        let out = parse_headless_args(&argv(&[
+            "z2-native",
+            "--headless",
+            "--dump-actors",
+            "a.jsonl",
+            "--actors-every",
+            "2",
+        ]))
+        .expect("parses");
+        let ParseOutcome::Run(a) = out else {
+            panic!("run")
+        };
+        assert_eq!(
+            (a.dump_actors.as_deref(), a.actors_every),
+            (Some("a.jsonl"), Some(2))
+        );
+        assert!(
+            parse_headless_args(&argv(&["z2-native", "--headless", "--actors-every", "0"]))
+                .is_err()
+        );
+        let dir = scratch("actors");
+        let path = dir.join("actors.jsonl");
+        run_headless(&HeadlessArgs {
+            frames: 5,
+            dump_actors: Some(path.to_string_lossy().into_owned()),
+            actors_every: Some(2),
+            dump_at: Some(format!("1,{}", dir.join("f").to_string_lossy())),
+            ..Default::default()
+        })
+        .expect("dump-actors runs ungated");
+        let text = std::fs::read_to_string(&path).expect("written");
+        let frames: Vec<u64> = text
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("json line"))
+            .map(|v| {
+                assert!(v["actors"].is_array() && v["players"].is_array());
+                v["frame"].as_u64().unwrap()
+            })
+            .collect();
+        assert_eq!(
+            frames.len(),
+            4,
+            "frames 1, 2, 4 and the final 5: {frames:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

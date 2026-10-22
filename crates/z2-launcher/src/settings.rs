@@ -1032,6 +1032,20 @@ mod tests {
         assert_eq!(sent, s.enhancements);
         assert!(!a.contains(&"--display-enh-json".to_string()));
 
+        // The new areas alone are "something on".
+        let mut s = Settings::default();
+        s.enhancements.content.virtual_rooms = true;
+        s.enhancements.content.hidden_caves = true;
+        let a = build_args(&s);
+        let i = a.iter().position(|x| x == "--enh-json").expect("flag sent");
+        let sent = Enhancements::from_json(&a[i + 1]).expect("valid JSON");
+        assert_eq!(sent.content, s.enhancements.content);
+        // An area left on with the master switch off still counts as a
+        // change (the game ignores it, but the launcher keeps the choice).
+        let mut s = Settings::default();
+        s.enhancements.content.minigames = true;
+        assert!(build_args(&s).contains(&"--enh-json".to_string()));
+
         let s = Settings {
             display_enh: DisplayEnh::zalia_preset(),
             ..Settings::default()
@@ -1053,11 +1067,21 @@ mod tests {
         let d = temp_dir("enh");
         let p = Settings::path_in(&d);
         let s = Settings {
-            enhancements: Enhancements::zalia_preset(),
+            enhancements: z2_core::enh::Enhancements::zalia_preset(),
             display_enh: DisplayEnh::zalia_preset(),
             ..Settings::default()
         };
         s.save(&p).unwrap();
+        assert_eq!(Settings::load(&p), s);
+        // The new areas (content group) are saved in launcher.json too,
+        // the developer test room included.
+        let mut s = Settings::default();
+        s.enhancements.content.virtual_rooms = true;
+        s.enhancements.content.dark_isle = true;
+        s.enhancements.content.test_room = true;
+        s.save(&p).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("\"content\"") && text.contains("\"dark_isle\""));
         assert_eq!(Settings::load(&p), s);
         std::fs::write(&p, r#"{"rom_path":"/y.nes","scale":2}"#).unwrap();
         let old = Settings::load(&p);

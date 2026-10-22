@@ -23,6 +23,13 @@
 //!   `STEP` reference frames (scouting).
 //! * `--main` picks the variant written as `<name>.png` (default `wide`).
 //! * `--hd-pack` / `--record` load / record an HD pack on the present path.
+//! * `--camera-zoom Z` / `--present-size WxH` magnify the gameplay view around
+//!   Link and/or present at an exact size (display only; see
+//!   README.md). Every emulated frame advances the camera, so
+//!   its smoothing is the same as in play.
+//! * `--collision-boxes` draws collision geometry and writes `.collision.json`
+//!   sidecars (boxes, terrain probes, player and enemy actor anchors, clips,
+//!   character keys and original OAM).
 //! * `--tilemap` writes `<name>.tilemap.tsv` beside each main capture: which
 //!   `(page, tile, colours)` every presented pixel run and sprite row came
 //!   from, plus `<name>.scene.json` (scene identity and camera) in sideview and
@@ -321,7 +328,11 @@ struct Displays {
     pack: Option<PathBuf>,
     record: Option<PathBuf>,
     tilemap: bool,
+    collision_boxes: bool,
     scale: u32,
+    /// `--camera-zoom` / `--present-size` (presentation only).
+    camera_zoom: f32,
+    present_size: Option<(u32, u32)>,
     map: HashMap<String, Display>,
 }
 
@@ -348,7 +359,12 @@ impl Displays {
                     None
                 },
                 margin_sprites: false,
-                display_enh: Default::default(),
+                display_enh: z2_core::enh::DisplayEnh {
+                    dev_hitboxes: self.collision_boxes,
+                    camera_zoom: self.camera_zoom,
+                    ..Default::default()
+                },
+                output_size: self.present_size,
             })?;
             self.map.insert(variant.to_string(), d);
         }
@@ -364,6 +380,30 @@ impl Displays {
         out: &Path,
     ) -> Result<(), String> {
         self.dump(variant, emu, path)?;
+        if self.collision_boxes {
+            let players: Vec<_> = emu
+                .game
+                .player_visuals()
+                .iter()
+                .flatten()
+                .map(|v| {
+                    serde_json::json!({"id": v.id, "clip": v.clip,
+                    "position": v.position, "flip_h": v.flip_h})
+                })
+                .collect();
+            // Enemy/NPC/boss character keys, clips, ground anchors and
+            // displayed OAM boxes beside their collision boxes.
+            let actors = z2_core::actor_visual::actor_report(&emu.game)["actors"].take();
+            let data = serde_json::json!({
+                "frame": emu.game.frame_count(), "geometry": emu.game.collision_geometry(),
+                "players": players, "actors": actors, "oam": emu.game.oam().as_slice(),
+            });
+            std::fs::write(
+                path.with_extension("collision.json"),
+                serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("write collision geometry: {e}"))?;
+        }
         if self.tilemap {
             let tiles = self.get(variant)?.settings().wide_tiles;
             let tsv = path.with_extension("tilemap.tsv");
@@ -384,11 +424,12 @@ impl Displays {
             if let Some(sc) = emu.game.sideview_scene() {
                 let json = format!(
                     "{{\"world\": {}, \"region\": {}, \"scene\": {}, \"camera_x\": {}, \
-                     \"margin_px\": {}}}\n",
+                     \"vroom\": {}, \"margin_px\": {}}}\n",
                     sc.world,
                     sc.region,
                     sc.scene,
                     sc.camera_x,
+                    sc.vroom,
                     u32::from(tiles) * 8
                 );
                 let file = path.with_extension("scene.json");
@@ -565,6 +606,9 @@ fn run() -> Result<(), String> {
     let mut pack: Option<PathBuf> = None;
     let mut record: Option<PathBuf> = None;
     let mut tilemap = false;
+    let mut collision_boxes = false;
+    let mut camera_zoom = 1.0f32;
+    let mut present_size = None;
     let mut states = false;
     let mut from = 0usize;
     let mut to = usize::MAX;
@@ -583,6 +627,9 @@ fn run() -> Result<(), String> {
             "--hd-pack" => pack = Some(PathBuf::from(val()?)),
             "--record" => record = Some(PathBuf::from(val()?)),
             "--tilemap" => tilemap = true,
+            "--collision-boxes" => collision_boxes = true,
+            "--camera-zoom" => camera_zoom = app::parse_camera_zoom(&val()?)?,
+            "--present-size" => present_size = Some(app::parse_present_size(&val()?)?),
             "--states" => states = true,
             "--from" => from = val()?.parse().map_err(|_| "bad --from")?,
             "--to" => to = val()?.parse().map_err(|_| "bad --to")?,
@@ -654,7 +701,10 @@ fn run() -> Result<(), String> {
         pack,
         record,
         tilemap,
+        collision_boxes,
         scale,
+        camera_zoom,
+        present_size,
         map: HashMap::new(),
     };
     let mut survey_rows =

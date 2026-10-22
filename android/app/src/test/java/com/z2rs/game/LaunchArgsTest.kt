@@ -28,8 +28,10 @@ class LaunchArgsTest {
     fun hdPackIsPassedOnlyWhenSet() {
         val pack = "/data/user/0/com.z2rs.game/files/hd_pack/My Pack"
         val args = LaunchArgs.build("/r.nes", "off", "fit", coopLocal = false, hdPack = pack)
-        assertEquals(listOf("--hd-pack", pack), args.takeLast(2))
-        assertFalse("--hd-pack" in LaunchArgs.build("/r.nes", "off", "fit", coopLocal = false, hdPack = null))
+        assertEquals(listOf("--hd-pack", pack, "--hd-scale", "4"), args.takeLast(4))
+        val noPack = LaunchArgs.build("/r.nes", "off", "fit", coopLocal = false, hdPack = null)
+        assertFalse("--hd-pack" in noPack)
+        assertFalse("--hd-scale" in noPack)
         // A blank path would mean "pack off" to the parser; no pack is no flag.
         assertFalse("--hd-pack" in LaunchArgs.build("/r.nes", "off", "fit", coopLocal = false, hdPack = " "))
     }

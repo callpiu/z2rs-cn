@@ -149,13 +149,13 @@ Save states, movies, pause, the co-op toggle and the pack picker are disabled wh
 | `state()` | → JSON `{version, romLoaded, crc32, sha1, sections, frame, lastInput, movieKind, movieLen, movieCursor, audioQueued}` | tab state |
 | `input(mask, frames)` | hold pad byte `mask` for `frames` frames → frames stepped | `Game::step` |
 | `step(n)` | advance `n` frames; consumes the armed movie track if any, else neutral input → frames stepped | movie track / `Game::step` |
-| `snapshot()` | → `Uint8Array` (`Z2WEB01`) | `src/snapshot.rs` |
-| `restore(bytes)` | accept `Z2WEB01` or `Z2SNAP01` corpus blob → status JSON | `src/snapshot.rs` |
+| `snapshot()` | → `Uint8Array` (`Z2GS`, whole-game state) | `z2-core/src/state.rs` |
+| `restore(bytes)` | accept `Z2GS`, older `Z2WEB01` or `Z2SNAP01` corpus blob → status JSON | `src/lib.rs` |
 | `loadMovie(text)` | parse `.fm2` / `Input Log.txt`, arm track → report JSON | `src/movie.rs` |
 | `screenshot()` | → PNG data URL of the current frame | RGBA blit + canvas |
 | `version` | crate version string | `CARGO_PKG_VERSION` |
 
-A wasm `Result::Err` surfaces as a thrown JS exception, so test scripts fail loudly. `restore` does not rewind the engine frame counter, because the core exposes no state import. This is the same limitation `xtask verify --dut game --snapshot` has. Memory images restore exactly.
+A wasm `Result::Err` surfaces as a thrown JS exception, so test scripts fail loudly. Restoring a `Z2GS` save rewinds the game and its frame counter. Older `Z2WEB01` and `Z2SNAP01` files import RAM and WRAM only.
 
 The number of members is part of the contract. `site/smoke.mjs` asserts that `window.z2` has exactly these nine members plus `ext`, and a tenth top-level member fails the smoke test. New controls go under `ext`. If you change the stable set, update the table above and the list in `smoke.mjs` together.
 
@@ -247,9 +247,9 @@ running. A pause the player asked for stays until the player ends it.
 
 ## Saves
 
-`snapshot()` blobs (`Z2WEB01`: magic, version, frame, ram, wram and a CRC32) and raw 8 KiB SRAM images live in IndexedDB (the `z2rs-web` database, `slots` store, keys `<slot>:snapshot` and `<slot>:sram`) through the Save and Load buttons. You can also export them as `.z2web` files. Import accepts both `Z2WEB01` and `Z2SNAP01` corpus snapshots, through the ram/wram import path.
+`snapshot()` blobs (`Z2GS`, including CPU, mapper, PPU, RAM and frame counter) and raw 8 KiB SRAM images live in IndexedDB (the `z2rs-web` database, `slots` store, keys `<slot>:snapshot` and `<slot>:sram`) through the Save and Load buttons. You can also export them as `.z2web` files. Loading a new save restores the saved scene and rewinds the frame counter. Import also accepts older `Z2WEB01` and `Z2SNAP01` corpus snapshots as RAM/WRAM imports.
 
-No ROM bytes are ever stored. After a page reload you drop the ROM again.
+The browser does not retain the ROM file itself. Save states contain loaded graphics memory as part of the game state. After a page reload, choose the ROM again.
 
 ## Tests
 
@@ -269,6 +269,6 @@ The tests are driven by Playwright and share the static server in `qa-server.mjs
 
 - Audio: the game's own sound engine runs on the interpreter. Its APU register writes are drained into the `z2-apu` synth every frame, and the synth's PCM goes to a worklet ring buffer. The desktop app plays sound through the same path. Sound is on by default (the Mute checkbox or the TV's VOL button turns it off, remembered per browser), but browsers only start an `AudioContext` inside a user activation such as a click, tap or key press. A gamepad button is not one, so a player using only a controller would hear nothing. To cover that, every pointer, mouse, key, touch and click event anywhere on the page creates or resumes the context, including the click that opens the ROM picker. While a game runs and the context is not running (suspended, Safari's `interrupted`, or not created yet, for example after a drag-and-drop load), a "Click or press any key for sound" strip sits on the screen, and the frame loop checks it every frame. Enable audio can still be pressed at any time. Samples produced while the context is not running are dropped, not queued. `z2.ext.audio()` returns the context state, `wanted`, `hint` and the ring's last report, and `smoke.mjs` asserts `peak > 0` with the real ROM. The synth renders at the context's own rate (8 to 192 kHz; outside that the ring resamples), the context is never rebuilt, and the ring corrects drift between the system and device clocks by playing 0.1% fast or slow, so a healthy run shows 0 underruns and 0 dropped samples. Without AudioWorklet, or if its module fails to load, the same ring runs behind a ScriptProcessorNode.
 - A snapshot restore does not rewind the synth. A note held at the moment of the restore can linger until the game writes the channel again.
-- `restore` rewinds memory but not the step counter, because the core has no state import yet.
+- Older `Z2WEB01` and `Z2SNAP01` imports restore RAM and WRAM only. The current CPU, mapper, PPU and frame counter remain in place.
 - A whole-ZIP `.bk2` would need deflate in the tab. Extract `Input Log.txt` first.
 - The zero-copy `frame_ptr`/`frame_len` blit is exposed, but `app.js` uses the copying `frame_rgba()` path because it is robust across `wasm-pack` targets.

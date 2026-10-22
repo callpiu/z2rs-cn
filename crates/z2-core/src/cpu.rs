@@ -565,7 +565,11 @@ pub(crate) fn bus_read(game: &mut Game, addr: u16) -> u8 {
         0x4017 => game.poll_pad2(),
         0x4018..=0x401F => 0, // APU test-mode / open bus stub.
         0x4020..=0x5FFF => 0, // Expansion / open bus stub.
-        0x6000..=0x7FFF => game.wram[(addr - 0x6000) as usize],
+        0x6000..=0x7FFF => {
+            #[cfg(feature = "wram-probe")]
+            crate::wram_probe::note_read((addr - 0x6000) as usize);
+            game.wram[(addr - 0x6000) as usize]
+        }
         _ => {
             // $8000-$FFFF: PRG ROM through MMC1.
             let idx = game.mmc1.map_prg(addr, game.prg.len());
@@ -600,6 +604,10 @@ pub(crate) fn bus_write(game: &mut Game, addr: u16, val: u8) {
             // OAM DMA: copy one page into OAM and forward it into the PPU
             // model (PpuBind::oam_dma); the OAM address latch is untouched.
             let base = (val as u16) << 8;
+            // Presentation snapshot: the state these sprites were drawn from.
+            game.shown_prev = game.shown_ram;
+            game.shown_ram = game.ram;
+            game.shown_valid = (game.shown_valid + 1).min(2);
             for i in 0..256u16 {
                 game.oam[i as usize] = bus_read(game, base | i);
             }
@@ -618,7 +626,11 @@ pub(crate) fn bus_write(game: &mut Game, addr: u16, val: u8) {
         0x4016 => game.set_strobe(val),
         0x4018..=0x401F => {} // APU test-mode stub: ignore.
         0x4020..=0x5FFF => {} // Expansion stub: ignore.
-        0x6000..=0x7FFF => game.wram[(addr - 0x6000) as usize] = val,
+        0x6000..=0x7FFF => {
+            #[cfg(feature = "wram-probe")]
+            crate::wram_probe::note_write((addr - 0x6000) as usize);
+            game.wram[(addr - 0x6000) as usize] = val;
+        }
         _ => {
             game.mmc1.write(addr, val);
             // CHR/mirroring changes take effect from the beam's current

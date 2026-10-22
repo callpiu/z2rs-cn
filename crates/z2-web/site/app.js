@@ -297,7 +297,7 @@ function applyUrlParams() {
 // --- window.z2 QA contract ----------------------------------------
 // The 9 stable members are unchanged byte-for-byte: { facts, state, input,
 // step, snapshot, restore, loadMovie, screenshot, version }. Backed by
-// Game::facts + the Z2WEB01/Z2SNAP01 codec + the .fm2/Input-Log parsers.
+// Game::facts + Z2GS saves and legacy imports + the .fm2/Input-Log parsers.
 //
 // Everything added for widescreen / co-op / netplay lives under `z2.ext`,
 // which is explicitly NOT part of the stable QA contract (see site/README).

@@ -135,10 +135,26 @@ pub struct TileEntry {
 }
 
 /// One scene layer: a PNG at the pack scale behind or over the background.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayerEntry {
-    /// Path relative to `pack.json` (`/` separators, no `..`).
+    /// Path relative to `pack.json` (`/` separators, no `..`). Leave it out
+    /// (or empty) for an animated layer, which names its [`Self::frames`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub file: String,
+    /// Animated layer: frame images (same size, same anchor), looped at
+    /// [`Self::fps`] over emulated time. Replaces `file`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frames: Vec<String>,
+    /// Frames per second of an animated layer (1..=240).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<f64>,
+    /// Constant horizontal velocity in NES pixels per second (+ = right),
+    /// over emulated time; wraps with `repeat_x`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_x: Option<f64>,
+    /// Constant vertical velocity in NES pixels per second (+ = down).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_y: Option<f64>,
     /// Scene filter; an absent key matches any value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<LayerWhen>,
@@ -177,6 +193,9 @@ pub struct LayerWhen {
     /// `$0561`: scene layout index inside the world.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<u64>,
+    /// Virtual room (new areas): its id + 1, `0` = only original rooms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vroom: Option<u64>,
     /// Fetched background tile at a fixed NES screen pixel (ANDed with scene).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_tile: Option<BackgroundTileSignature>,
@@ -459,10 +478,12 @@ pub struct SceneView {
     pub scene: u8,
     /// Level pixel at the NES window's left edge.
     pub camera_x: i32,
+    /// Virtual room on screen (new areas): its id + 1, 0 = an original room.
+    pub vroom: u16,
 }
 
 /// A validated `layers[]` entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Layer {
     /// Index into [`HdPack::sheets`].
     pub sheet: u16,
@@ -473,9 +494,18 @@ pub struct Layer {
     /// Percent of the camera movement followed, 0..=100.
     pub scroll: u8,
     pub repeat_x: bool,
+    /// Animation frames (indices into [`HdPack::sheets`], `frames[0] ==
+    /// sheet`); one entry for a still layer.
+    pub frames: Vec<u16>,
+    /// Frames per second of [`Self::frames`] (unused for a still layer).
+    pub fps: f64,
+    /// Drift in NES pixels per second, `[x, y]`.
+    pub drift: [f64; 2],
     pub world: Option<u8>,
     pub region: Option<u8>,
     pub scene: Option<u8>,
+    /// Virtual room id + 1; `Some(0)` = original rooms only.
+    pub vroom: Option<u16>,
     pub background_tile: Option<BackgroundTileSignature>,
     /// Sorted `(page, tile)` list; empty = no tile restriction.
     pub over_tiles: Vec<(u8, u8)>,
@@ -491,8 +521,14 @@ impl Layer {
                 self.world.is_none_or(|w| w == s.world)
                     && self.region.is_none_or(|r| r == s.region)
                     && self.scene.is_none_or(|c| c == s.scene)
+                    && self.vroom.is_none_or(|v| v == s.vroom)
             }
-            None => self.world.is_none() && self.region.is_none() && self.scene.is_none(),
+            None => {
+                self.world.is_none()
+                    && self.region.is_none()
+                    && self.scene.is_none()
+                    && self.vroom.is_none()
+            }
         }
     }
 
@@ -584,7 +620,7 @@ pub struct HdPack {
     variant_count: usize,
     sprite_alpha_art: bool,
     layers: Vec<Layer>,
-    actor_clips: Vec<crate::actors::ActorClip>,
+    actor_clips: crate::actors::ActorLibrary,
     /// Largest vertical bleed of any cell, in NES pixels.
     max_bleed_v: u8,
 }
@@ -897,15 +933,50 @@ impl HdPack {
 
         let mut layers = Vec::with_capacity(m.layers.len());
         for (i, l) in m.layers.iter().enumerate() {
-            let entry = format!("layers[{i}] (\"{}\")", l.file);
-            let path = normalize_rel_path(&l.file).ok_or_else(|| PackError::Path {
-                entry: entry.clone(),
-                path: l.file.clone(),
-            })?;
+            let first_file = if l.file.is_empty() {
+                l.frames.first().cloned().unwrap_or_default()
+            } else {
+                l.file.clone()
+            };
+            let entry = format!("layers[{i}] (\"{first_file}\")");
             let bad = |msg: String| PackError::Layer {
                 entry: entry.clone(),
                 msg,
             };
+            if !l.file.is_empty() && !l.frames.is_empty() {
+                return Err(bad("give \"file\" or \"frames\", not both".to_string()));
+            }
+            if l.frames.len() > 256 {
+                return Err(bad("at most 256 frames".to_string()));
+            }
+            let files: Vec<String> = if l.frames.is_empty() {
+                vec![l.file.clone()]
+            } else {
+                l.frames.clone()
+            };
+            let fps = match (files.len(), l.fps) {
+                (1, None) => 0.0,
+                (_, Some(v)) if v.is_finite() && (1.0..=240.0).contains(&v) => v,
+                (1, Some(v)) => return Err(bad(format!("fps {v} out of range (1..=240)"))),
+                (_, v) => {
+                    return Err(bad(format!(
+                        "an animated layer needs \"fps\" 1..=240 (got {v:?})"
+                    )))
+                }
+            };
+            let speed = |v: Option<f64>, name: &str| match v {
+                None => Ok(0.0),
+                Some(v) if v.is_finite() && v.abs() <= 4096.0 => Ok(v),
+                Some(v) => Err(bad(format!("{name} {v} out of range (-4096..=4096)"))),
+            };
+            let drift = [speed(l.drift_x, "drift_x")?, speed(l.drift_y, "drift_y")?];
+            let mut paths = Vec::with_capacity(files.len());
+            for f in &files {
+                paths.push(normalize_rel_path(f).ok_or_else(|| PackError::Path {
+                    entry: entry.clone(),
+                    path: f.clone(),
+                })?);
+            }
             let depth = match l.depth.as_deref() {
                 None | Some("back") => LayerDepth::Back,
                 Some("front") => LayerDepth::Front,
@@ -964,26 +1035,41 @@ impl HdPack {
             }
             over_tiles.sort_unstable();
             over_tiles.dedup();
-            let img_idx = if let Some(&k) = file_to_image.get(&path) {
-                k
-            } else {
-                if images.len() >= usize::from(u16::MAX) {
-                    return Err(bad("too many distinct image files".to_string()));
-                }
-                let bytes = read(&path).map_err(|reason| PackError::MissingFile {
-                    file: path.clone(),
-                    reason,
-                })?;
-                let mut img = decode_png_rgba(&bytes).map_err(|err| PackError::Png {
-                    file: path.clone(),
-                    err,
-                })?;
-                threshold_alpha(&mut img, alpha_threshold);
-                images.push(img);
-                image_files.push(path.clone());
-                file_to_image.insert(path.clone(), images.len() - 1);
-                images.len() - 1
+            let mut frames = Vec::with_capacity(paths.len());
+            for path in &paths {
+                let img_idx = if let Some(&k) = file_to_image.get(path) {
+                    k
+                } else {
+                    if images.len() >= usize::from(u16::MAX) {
+                        return Err(bad("too many distinct image files".to_string()));
+                    }
+                    let bytes = read(path).map_err(|reason| PackError::MissingFile {
+                        file: path.clone(),
+                        reason,
+                    })?;
+                    let mut img = decode_png_rgba(&bytes).map_err(|err| PackError::Png {
+                        file: path.clone(),
+                        err,
+                    })?;
+                    threshold_alpha(&mut img, alpha_threshold);
+                    images.push(img);
+                    image_files.push(path.clone());
+                    file_to_image.insert(path.clone(), images.len() - 1);
+                    images.len() - 1
+                };
+                frames.push(img_idx as u16);
+            }
+            let size = |k: u16| {
+                let img = &images[usize::from(k)];
+                (img.width, img.height)
             };
+            if let Some(k) = frames.iter().find(|&&k| size(k) != size(frames[0])) {
+                let ((w0, h0), (w, h)) = (size(frames[0]), size(*k));
+                return Err(bad(format!(
+                    "animation frames must share one size: {w0}x{h0} and {w}x{h}"
+                )));
+            }
+            let img_idx = usize::from(frames[0]);
             layers.push(Layer {
                 sheet: img_idx as u16,
                 depth,
@@ -991,9 +1077,19 @@ impl HdPack {
                 y: coord(l.y, "y")?,
                 scroll,
                 repeat_x: l.repeat_x,
+                frames,
+                fps,
+                drift,
                 world: byte(when.world, "world")?,
                 region: byte(when.region, "region")?,
                 scene: byte(when.scene, "scene")?,
+                vroom: when
+                    .vroom
+                    .map(|v| {
+                        u16::try_from(v)
+                            .map_err(|_| bad(format!("when.vroom {v} out of range (0..=65535)")))
+                    })
+                    .transpose()?,
                 background_tile: when.background_tile,
                 over_tiles,
             });
@@ -1057,7 +1153,19 @@ impl HdPack {
 
     #[must_use]
     pub fn actor_clips(&self) -> &[crate::actors::ActorClip] {
+        &self.actor_clips.clips
+    }
+
+    /// The actor clips with their lookup index and decode cache.
+    #[must_use]
+    pub fn actor_library(&self) -> &crate::actors::ActorLibrary {
         &self.actor_clips
+    }
+
+    /// Mutable access to the actor clips' decode cache (for
+    /// [`crate::actors::ActorLibrary::set_decode_budget`]).
+    pub fn actor_library_mut(&mut self) -> &mut crate::actors::ActorLibrary {
+        &mut self.actor_clips
     }
 
     /// Largest top or bottom `bleed` of any cell, in NES pixels.

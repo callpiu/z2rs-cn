@@ -51,9 +51,9 @@ pub struct Opts {
     /// Whether gameplay options may be edited. Display options always may.
     pub gameplay_editable: bool,
     /// The ROM randomizer (`z2-rando`, the launcher's Randomizer tab) is on:
-    /// options that assume the original world (the item shuffle) are greyed
-    /// out with a note, because the game turns them off
-    /// ([`Enhancements::for_rom`]).
+    /// the item shuffle is greyed out with a note, because the game turns it
+    /// off ([`Enhancements::for_rom`]); the new areas stay editable with a
+    /// note that areas whose spare slot the seed uses are skipped.
     pub rom_randomized: bool,
 }
 
@@ -84,6 +84,8 @@ pub enum Group {
     Rando,
     /// Cheats.
     Cheats,
+    /// New areas (virtual rooms).
+    Content,
     /// Graphics effects (display only).
     Graphics,
     /// Audio (display only).
@@ -94,7 +96,7 @@ pub enum Group {
 
 impl Group {
     /// Every group, in launcher order.
-    pub const ALL: [Group; 10] = [
+    pub const ALL: [Group; 11] = [
         Group::Text,
         Group::Qol,
         Group::Fixes,
@@ -102,6 +104,7 @@ impl Group {
         Group::Abilities,
         Group::Rando,
         Group::Cheats,
+        Group::Content,
         Group::Graphics,
         Group::Audio,
         Group::Dev,
@@ -124,6 +127,7 @@ pub fn group_ui(ui: &mut egui::Ui, g: Group, e: &mut Enhancements, d: &mut Displ
         Group::Abilities => abilities_group(ui, e, o),
         Group::Rando => rando_group(ui, e, o),
         Group::Cheats => cheats_group(ui, e, o),
+        Group::Content => content_group(ui, e, o),
         Group::Graphics => graphics_group(ui, d, o),
         Group::Audio => audio_group(ui, d, o),
         Group::Dev => dev_group(ui, d, o),
@@ -249,8 +253,8 @@ pub fn preset_buttons(
             .on_hover_text(
                 "ZALiA's own defaults: dialogue speed 2, continue from the palace entrance \
                  or last town, keep 25% XP, lives from dolls, enter towns from the side, \
-                 wise men restore MP, every engine fix and enemy tweak, screen shake and a \
-                 red flash.",
+                 wise men restore MP, every engine fix and enemy tweak, the new areas \
+                 except the Dark Isle, screen shake and a red flash.",
             )
             .clicked()
         {
@@ -743,6 +747,92 @@ fn cheats_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
     );
 }
 
+fn content_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
+    group(
+        ui,
+        "New areas (ZALiA-inspired)",
+        "enh-content",
+        o.force_open,
+        o.gameplay_editable,
+        |ui| {
+            hint(
+                ui,
+                "Rooms that are not in the original game. Every layout is original to z2rs, \
+                 inspired by ZALiA (HoverBat's Zelda II remake); nothing is copied from it. \
+                 In progress: areas not finished yet are saved but have no effect.",
+            );
+            let c = &mut e.content;
+            ui.scope(|ui| {
+                check(
+                    ui,
+                    &mut c.virtual_rooms,
+                    "New areas",
+                    "Master switch: lets the game enter rooms that are not in the original \
+                     (virtual rooms). The areas below need it. Layouts are original, inspired \
+                     by ZALiA.",
+                );
+                ui.add_enabled_ui(c.virtual_rooms, |ui| {
+                    let rows: [(&mut bool, &str, &str); 5] = [
+                        (
+                            &mut c.parapa_annex,
+                            "Parapa annex",
+                            "Extra rooms off Parapa Palace (Palace 1). Original layouts, \
+                             inspired by ZALiA's expanded Palace 1.",
+                        ),
+                        (
+                            &mut c.challenge_rooms,
+                            "Challenge rooms",
+                            "Optional rooms with a hard fight or platforming test and a reward. \
+                             Original layouts, inspired by ZALiA's challenge rooms.",
+                        ),
+                        (
+                            &mut c.minigames,
+                            "Minigames",
+                            "Small optional games for a prize. Original designs, inspired by \
+                             ZALiA's minigames.",
+                        ),
+                        (
+                            &mut c.hidden_caves,
+                            "Hidden caves",
+                            "Secret caves holding heart or magic containers and other \
+                             treasure. Original layouts, inspired by ZALiA's caves.",
+                        ),
+                        (
+                            &mut c.dark_isle,
+                            "Dark Isle",
+                            "A whole extra island with a monster town and a palace. Original \
+                             layouts, inspired by ZALiA's Palace 8 and Bulblin town. Not part \
+                             of the ZALiA preset.",
+                        ),
+                    ];
+                    for (v, label, tip) in rows {
+                        check(ui, v, label, tip);
+                    }
+                    egui::CollapsingHeader::new("Developer")
+                        .id_salt("enh-content-dev")
+                        .open(o.force_open.then_some(true))
+                        .show(ui, |ui| {
+                            check(
+                                ui,
+                                &mut c.test_room,
+                                "Test room",
+                                "A developer room (a few platforms, a Bot, a P-bag) between \
+                                 Great Palace maps 1 and 2, for testing virtual rooms.",
+                            );
+                        });
+                });
+            });
+            if o.rom_randomized {
+                hint(
+                    ui,
+                    "With the ROM randomizer on, areas whose spare room slot the seed uses \
+                     are skipped.",
+                );
+            }
+        },
+    );
+}
+
 fn graphics_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
     group(
         ui,
@@ -769,6 +859,29 @@ fn graphics_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
                     .show_ui(ui, |ui| {
                         for c in FlashColor::ALL {
                             ui.selectable_value(&mut d.flash_color, c, c.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text(tip);
+            });
+            let tip = "Magnify the gameplay view around Link (display only). The status bar \
+                   and the boss life meter stay at their normal size; menus and dialogue \
+                   zoom back out. 2x with a 4x HD pack shows each pack pixel as a crisp \
+                   block.";
+            ui.horizontal(|ui| {
+                ui.label("Camera zoom").on_hover_text(tip);
+                let label = |z: f32| {
+                    if z <= 1.0 {
+                        "Off".to_string()
+                    } else {
+                        format!("{z}x")
+                    }
+                };
+                egui::ComboBox::from_id_salt("enh-camera-zoom")
+                    .selected_text(label(d.camera_zoom))
+                    .show_ui(ui, |ui| {
+                        for z in [1.0f32, 1.5, 2.0, 3.0] {
+                            ui.selectable_value(&mut d.camera_zoom, z, label(z));
                         }
                     })
                     .response
@@ -847,8 +960,8 @@ fn dev_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
         check(
             ui,
             &mut d.dev_hitboxes,
-            "Show hitboxes",
-            "Draw the collision boxes. ZALiA: Dev tools > Hitboxes.",
+            "Show collision boxes",
+            "Body (green), shield (purple), sword (yellow), enemies (red), and terrain probes (cyan). Uses game collision tables, including HD actor animations.",
         );
         check(
             ui,
@@ -874,6 +987,7 @@ fn dev_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use z2_core::enh::ContentOpts;
 
     /// Every group renders headless, editable and read-only, with the
     /// original options and the ZALiA preset.
@@ -903,6 +1017,77 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn content_group_renders_in_every_state() {
+        let ctx = egui::Context::default();
+        for master in [false, true] {
+            for rom_randomized in [false, true] {
+                let mut e = Enhancements::default();
+                e.content.virtual_rooms = master;
+                e.content.dark_isle = true;
+                let before = e;
+                let mut d = DisplayEnh::default();
+                let o = Opts {
+                    force_open: true,
+                    gameplay_editable: true,
+                    rom_randomized,
+                };
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    group_ui(ui, Group::Content, &mut e, &mut d, o);
+                });
+                out.textures_delta.clear();
+                assert_eq!(e, before, "drawing alone never edits anything");
+            }
+        }
+        assert!(Group::Content.is_gameplay());
+    }
+
+    #[test]
+    fn zalia_preset_turns_on_the_areas_but_not_the_dark_isle() {
+        // The button applies the core preset, new areas included.
+        let z = Enhancements::zalia_preset();
+        let c = z.content;
+        assert!(c.virtual_rooms && c.parapa_annex && c.challenge_rooms);
+        assert!(c.minigames && c.hidden_caves);
+        assert!(!c.dark_isle && !c.test_room);
+        assert!(z.content.is_active());
+        // Kept on a randomized ROM: the engine skips only the tables whose
+        // spare slot the seed uses.
+        assert_eq!(z.for_rom(true).content, z.content);
+        assert_eq!(z.for_rom(false), z);
+    }
+
+    #[test]
+    fn content_options_round_trip_through_json() {
+        let z = Enhancements::zalia_preset();
+        assert_eq!(Enhancements::from_json(&z.to_json()).unwrap(), z);
+        let every = Enhancements {
+            content: ContentOpts {
+                virtual_rooms: true,
+                test_room: true,
+                parapa_annex: true,
+                challenge_rooms: true,
+                minigames: true,
+                hidden_caves: true,
+                dark_isle: true,
+            },
+            ..Enhancements::default()
+        };
+        assert_eq!(Enhancements::from_json(&every.to_json()).unwrap(), every);
+        // Missing keys are off; an older file without the group still loads.
+        let partial =
+            Enhancements::from_json(r#"{"content":{"virtual_rooms":true,"minigames":true}}"#)
+                .unwrap();
+        assert!(partial.content.virtual_rooms && partial.content.minigames);
+        assert!(!partial.content.hidden_caves && !partial.content.test_room);
+        assert_eq!(
+            Enhancements::from_json(r#"{"qol":{"lives_from_dolls":true}}"#)
+                .unwrap()
+                .content,
+            ContentOpts::default()
+        );
     }
 
     #[test]

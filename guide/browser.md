@@ -23,6 +23,8 @@ The web build runs the same engine as the desktop app, in a tab, with no npm and
 
 The canvas sizes itself from the emulator and works down to phone width. HD pack PNGs are decoded inside wasm. If a pack fails to load, the page says so in red and the game keeps playing with the original art. Sound is on by default. Browsers only allow sound after a click, tap or key press on the page, and a gamepad button does not count, so until then a "Click or press any key for sound" strip sits on the screen. The `sound:` line under Mute shows the audio state, which helps with bug reports. During online play, a status line shows your role, the frame, the delay, stalls, and the reason the session closed.
 
+Save and Load keep a complete game state in the browser, including the current scene and frame counter. Export writes a `.z2web` file you can import later. Older save files still import their RAM and WRAM, but cannot restore the complete scene. Battery saves use a separate 8 KiB SRAM file. After reloading the page, load your ROM again before using a save.
+
 More detail about the page, its `window.z2` scripting API and its tests is in [crates/z2-web/site/README](crates/z2-web/site/README).
 
 ## Optional features and bundle size

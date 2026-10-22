@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 z2-assets = { path = "../../crates/z2-assets" }
 z2-verify = { path = "../../crates/z2-verify" }
-z2-core = { path = "../../crates/z2-core" }
+z2-core = { path = "../../crates/z2-core", features = ["wram-probe"] }
 z2-ppu = { path = "../../crates/z2-ppu" }
 z2-render = { path = "../../crates/z2-render" }
+z2-rando = { path = "../../crates/z2-rando" }

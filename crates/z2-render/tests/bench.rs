@@ -192,7 +192,9 @@ fn compose_cost_per_frame() {
                         region: 0,
                         scene: 7,
                         camera_x: 123,
+                        vroom: 0,
                     }),
+                    time: None,
                 };
                 // Warm up caches, then time.
                 c.compose(input, &mut out).unwrap();

@@ -288,6 +288,7 @@ fn present_size_follows_the_widescreen_preset_and_scale() {
                 record_dir: None,
                 margin_sprites: false,
                 display_enh: Default::default(),
+                output_size: None,
             })
             .expect("no pack");
             assert_eq!(d.size(), app::present_size_scaled(tiles, scale));
@@ -349,6 +350,7 @@ fn no_rom_start_is_consistent_under_every_feature_combination() {
                     record_dir: None,
                     margin_sprites: false,
                     display_enh: Default::default(),
+                    output_size: None,
                 };
                 let what = format!("tiles={tiles} scale={scale} coop={coop}");
                 let feats = settings.features(coop);
@@ -390,6 +392,7 @@ fn no_rom_two_pad_stepping_and_present_is_safe() {
         record_dir: None,
         margin_sprites: false,
         display_enh: Default::default(),
+        output_size: None,
     };
     let mut emu = app::new_emu_with(44_100, settings.features(true));
     let mut display = Display::new(settings).expect("no pack");
@@ -470,6 +473,7 @@ fn hd_recording_round_trips_into_a_loadable_pack() {
         record_dir: Some(dir.clone()),
         margin_sprites: false,
         display_enh: Default::default(),
+        output_size: None,
     };
     let feats = settings.features(false);
     assert!(feats.record, "recording needs the PPU render record");
@@ -504,6 +508,7 @@ fn hd_recording_round_trips_into_a_loadable_pack() {
         record_dir: None,
         margin_sprites: false,
         display_enh: Default::default(),
+        output_size: None,
     };
     let mut hd = Display::new(reload).expect("the recorded pack loads");
     assert_eq!(hd.size(), app::present_size_scaled(11, 2));

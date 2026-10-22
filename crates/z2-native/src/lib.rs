@@ -23,6 +23,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod camera_zoom;
 pub mod config;
 pub mod diag;
 pub mod display_enh;

@@ -175,6 +175,57 @@ impl Default for GamepadBindings {
     }
 }
 
+impl GamepadBindings {
+    /// Apply a `--pad-map` spec: comma-separated `PAD=BUTTON` pairs with gilrs
+    /// pad names (`South`, `East`, `West`, `North`, `LeftTrigger`, `RightTrigger`,
+    /// `LeftTrigger2`, `RightTrigger2`, `Start`, `Select`, `DPadUp/Down/Left/Right`,
+    /// `LeftThumb`, `RightThumb`) and NES buttons (`A`, `B`, `Select`, `Start`,
+    /// `Up`, `Down`, `Left`, `Right`, or `none` to unbind). Listed pad buttons are
+    /// rebound; unlisted ones keep their current binding. Case-insensitive.
+    pub fn apply_spec(&mut self, spec: &str) -> Result<(), String> {
+        const PADS: [&str; 19] = [
+            "South",
+            "East",
+            "West",
+            "North",
+            "LeftTrigger",
+            "RightTrigger",
+            "LeftTrigger2",
+            "RightTrigger2",
+            "Start",
+            "Select",
+            "DPadUp",
+            "DPadDown",
+            "DPadLeft",
+            "DPadRight",
+            "LeftThumb",
+            "RightThumb",
+            "C",
+            "Z",
+            "Mode",
+        ];
+        const BITS: [&str; 8] = ["A", "B", "Select", "Start", "Up", "Down", "Left", "Right"];
+        for pair in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (pad, btn) = pair
+                .split_once('=')
+                .ok_or_else(|| format!("bad --pad-map entry {pair:?}: want PAD=BUTTON"))?;
+            let pad = PADS
+                .iter()
+                .find(|n| n.eq_ignore_ascii_case(pad.trim()))
+                .ok_or_else(|| format!("unknown pad button {pad:?} in --pad-map"))?;
+            if btn.trim().eq_ignore_ascii_case("none") {
+                self.map.remove(*pad);
+                continue;
+            }
+            let bit = BITS
+                .iter()
+                .position(|n| n.eq_ignore_ascii_case(btn.trim()))
+                .ok_or_else(|| format!("unknown NES button {btn:?} in --pad-map"))?;
+            self.map.insert((*pad).to_string(), bit as u8);
+        }
+        Ok(())
+    }
+}
 /// Netplay (online co-op) settings.
 ///
 /// Every field has a serde default, so a config file written before netplay
@@ -580,6 +631,22 @@ impl NativeConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pad_map_spec_rebinds_listed_buttons_only() {
+        let mut g = GamepadBindings::default();
+        g.apply_spec("south=A, East=b, Start=none").unwrap();
+        assert_eq!(g.map.get("South").copied(), Some(0));
+        assert_eq!(g.map.get("East").copied(), Some(1));
+        assert_eq!(g.map.get("Start"), None);
+        assert_eq!(
+            g.map.get("DPadUp").copied(),
+            Some(4),
+            "unlisted keeps default"
+        );
+        assert!(g.apply_spec("Souths=A").is_err());
+        assert!(g.apply_spec("South=X").is_err());
+        assert!(g.apply_spec("South").is_err());
+    }
     use super::*;
 
     #[test]

@@ -362,6 +362,10 @@ pub struct SideviewScene {
     pub scene: u8,
     /// Level pixel at window x = 0 on the first play-field line.
     pub camera_x: i32,
+    /// Virtual room on screen (new areas, `EnhState::vroom`): its id + 1,
+    /// 0 = an original room. [`sideview_scene`] reads RAM only and leaves
+    /// it 0; `Game::sideview_scene` fills it in.
+    pub vroom: u16,
 }
 
 /// World (`$0707`).
@@ -387,6 +391,7 @@ pub fn sideview_scene(ram: &[u8; 0x800], record: &FrameRecord) -> Option<Sidevie
         region: ram[usize::from(ADDR_OW_REGION)],
         scene: ram[usize::from(ADDR_SCENE_INDEX)],
         camera_x: sideview_world_left(ram, line),
+        vroom: 0,
     })
 }
 

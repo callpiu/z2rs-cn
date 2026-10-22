@@ -153,6 +153,7 @@ fn compose(
             margins,
             palette: &MasterPalette::NES,
             scene: None,
+            time: None,
         },
         &mut out,
     )
@@ -609,6 +610,7 @@ fn geometry_and_scale_errors() {
         margins: None,
         palette: &MasterPalette::NES,
         scene: None,
+        time: None,
     };
     assert_eq!(
         c.compose(input, &mut out).unwrap_err(),
@@ -1162,6 +1164,7 @@ fn compose_scene(
             margins: None,
             palette: &MasterPalette::NES,
             scene,
+            time: None,
         },
         &mut out,
     )
@@ -1180,6 +1183,7 @@ fn saria(camera_x: i32) -> Option<z2_render::SceneView> {
         region: 0,
         scene: 7,
         camera_x,
+        vroom: 0,
     })
 }
 
@@ -1876,4 +1880,135 @@ fn unloaded_variant_colours_still_fall_back_to_nes_art() {
     let pack = variant_only_pack("\"sprite_alpha\":\"art\",", stray, png(8, 8, |_, _| GREEN));
     let got = compose_scene(&frame, &rec, &chr, &pack, None);
     assert_eq!(px(&got, 101, 100), nes_rgba(sprite_colors(line, 1)[1]));
+}
+
+fn compose_at(
+    frame: &z2_ppu::IndexedFrame,
+    record: &FrameRecord,
+    chr: &[u8],
+    pack: &HdPack,
+    time: Option<(u64, f64)>,
+) -> Vec<u8> {
+    let mut c = Compositor::new(1).unwrap();
+    let mut out = vec![0u8; c.rgba_len()];
+    c.compose(
+        ComposeInput {
+            indexed: IndexedView::frame(frame),
+            record,
+            chr_rom: chr,
+            pack: Some(pack),
+            margins: None,
+            palette: &MasterPalette::NES,
+            scene: None,
+            time,
+        },
+        &mut out,
+    )
+    .expect("compose");
+    out
+}
+
+/// A 16 x 240 strip whose column `x` is coloured `x` (red channel).
+fn column_strip() -> Vec<u8> {
+    let rgba: Vec<u8> = (0..240)
+        .flat_map(|_| (0..16u8).flat_map(|x| [x * 16, 0, 255, 255]))
+        .collect();
+    z2_render::encode_png_rgba(16, 240, &rgba, &[]).unwrap()
+}
+
+#[test]
+fn drift_moves_a_repeating_layer_over_emulated_time() {
+    let chr = chr_image();
+    let mut p = scene(&chr);
+    let (frame, rec) = frame_and_record(&mut p);
+    let pack = pack_from(
+        r#""layers":[{"file":"band.png","depth":"front","scroll":0,"repeat_x":true,"drift_x":60}]"#,
+        vec![("band.png", column_strip())],
+    );
+    let column = |img: &[u8], x: usize| px(img, x, 100)[0] / 16;
+    let still = compose_at(&frame, &rec, &chr, &pack, None);
+    assert_eq!(column(&still, 3), 3);
+    // 60 px/s for 120 frames at 60 Hz: 120 px right, i.e. 8 px mod 16.
+    let later = compose_at(&frame, &rec, &chr, &pack, Some((120, 60.0)));
+    assert_eq!(column(&later, 3), 11, "3 - 8 mod 16");
+    // Same frame, same picture (a paused game, a reloaded state).
+    assert_eq!(
+        later,
+        compose_at(&frame, &rec, &chr, &pack, Some((120, 60.0)))
+    );
+    // Thousands of seconds in: still whole pixels, still wrapping.
+    let far = compose_at(&frame, &rec, &chr, &pack, Some((60 * 100_003, 60.0)));
+    assert_eq!(column(&far, 0), (16 - (100_003 * 60 % 16) as u8) % 16);
+}
+
+#[test]
+fn animated_layers_loop_their_frames_at_fps() {
+    let chr = chr_image();
+    let mut p = scene(&chr);
+    let (frame, rec) = frame_and_record(&mut p);
+    let red = [255, 0, 0, 255];
+    let green = [0, 255, 0, 255];
+    let pack = pack_from(
+        r#""layers":[{"frames":["a.png","b.png"],"fps":2,"depth":"front","scroll":0}]"#,
+        vec![
+            ("a.png", common::solid_png(256, 240, red)),
+            ("b.png", common::solid_png(256, 240, green)),
+        ],
+    );
+    let at = |f| {
+        px(
+            &compose_at(&frame, &rec, &chr, &pack, Some((f, 60.0))),
+            50,
+            100,
+        )
+    };
+    assert_eq!(at(0), red);
+    assert_eq!(at(29), red);
+    assert_eq!(at(30), green);
+    assert_eq!(at(60), red, "loops");
+    assert_eq!(
+        px(&compose_at(&frame, &rec, &chr, &pack, None), 50, 100),
+        red
+    );
+}
+
+#[test]
+fn malformed_animated_or_drifting_layers_are_rejected() {
+    let load = |body: &str, files: Vec<(&str, Vec<u8>)>| {
+        let json = format!("{{\"version\":1,\"name\":\"t\",\"scale\":1,{body}}}");
+        let mut list = vec![("pack.json".to_string(), json.into_bytes())];
+        list.extend(files.into_iter().map(|(n, b)| (n.to_string(), b)));
+        HdPack::from_files(&list)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    };
+    let px = [1, 2, 3, 255];
+    let two = || {
+        vec![
+            ("a.png", common::solid_png(8, 8, px)),
+            ("b.png", common::solid_png(8, 8, px)),
+        ]
+    };
+    assert!(load(r#""layers":[{"frames":["a.png","b.png"],"fps":12}]"#, two()).is_ok());
+    for (body, why) in [
+        (r#""layers":[{"frames":["a.png","b.png"]}]"#, "fps"),
+        (r#""layers":[{"frames":["a.png","b.png"],"fps":0}]"#, "fps"),
+        (
+            r#""layers":[{"file":"a.png","frames":["b.png"],"fps":5}]"#,
+            "not both",
+        ),
+        (r#""layers":[{"file":"a.png","drift_x":1e9}]"#, "drift_x"),
+    ] {
+        let err = load(body, two()).unwrap_err();
+        assert!(err.contains(why), "{body}: {err}");
+    }
+    let err = load(
+        r#""layers":[{"frames":["a.png","c.png"],"fps":5}]"#,
+        vec![
+            ("a.png", common::solid_png(8, 8, px)),
+            ("c.png", common::solid_png(9, 8, px)),
+        ],
+    )
+    .unwrap_err();
+    assert!(err.contains("share one size"), "{err}");
 }

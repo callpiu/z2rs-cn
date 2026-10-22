@@ -1337,12 +1337,30 @@ pub fn apply_snapshot_to_game(
     Ok(())
 }
 
+/// The bytes `F5` writes: the whole `Game` ([`z2_core::state::GameState`]),
+/// so CPU, mapper, nametables and both CHR slots come back with the RAM.
+pub fn savestate_bytes(game: &Game) -> Vec<u8> {
+    game.save_state().to_bytes()
+}
+
+/// Apply save-state `bytes` to `game`: a whole-`Game` image (`Z2GS`, what
+/// `F5` writes) resumes exactly where it was saved; an older `Z2SNAP01`
+/// file (RAM and WRAM only, as corpus snapshots and `article_shots` write)
+/// goes through [`apply_snapshot_to_game`].
+pub fn apply_savestate_bytes(game: &mut Game, bytes: &[u8]) -> Result<(), String> {
+    if bytes.starts_with(&z2_core::state::STATE_MAGIC) {
+        let state = z2_core::state::GameState::from_bytes(bytes).map_err(|e| e.to_string())?;
+        game.load_state(&state);
+        return Ok(());
+    }
+    let snap = z2_verify::snapshot::Snapshot::decode(bytes).map_err(|e| e.to_string())?;
+    apply_snapshot_to_game(game, &snap)
+}
+
 /// Load a `.z2snap` file into `game` (what `--load-state` and `F7` do).
 pub fn load_state_file(game: &mut Game, path: &Path) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let snap = z2_verify::snapshot::Snapshot::decode(&bytes)
-        .map_err(|e| format!("decode {}: {e}", path.display()))?;
-    apply_snapshot_to_game(game, &snap)
+    apply_savestate_bytes(game, &bytes).map_err(|e| format!("decode {}: {e}", path.display()))
 }
 
 /// Blank frames run before `--load-state` applies its file: the game's reset
@@ -1365,8 +1383,7 @@ pub fn savestate_path(data_dir: &Path, slot: u8) -> PathBuf {
 /// Write the current `Game` state to `slot`.
 pub fn save_savestate(game: &Game, data_dir: &Path, slot: u8) -> Result<PathBuf, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| format!("create {}: {e}", data_dir.display()))?;
-    let snap = snapshot_from_game(game, Vec::new())?;
-    let bytes = snap.encode().map_err(|e| format!("encode: {e}"))?;
+    let bytes = savestate_bytes(game);
     let path = savestate_path(data_dir, slot);
     std::fs::write(&path, &bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(path)
@@ -1392,8 +1409,7 @@ pub fn save_savestate_for(
     hash: Option<&str>,
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| format!("create {}: {e}", data_dir.display()))?;
-    let snap = snapshot_from_game(game, Vec::new())?;
-    let bytes = snap.encode().map_err(|e| format!("encode: {e}"))?;
+    let bytes = savestate_bytes(game);
     let path = savestate_path_for(data_dir, slot, hash);
     std::fs::write(&path, &bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(path)
@@ -1765,9 +1781,21 @@ pub struct DisplaySettings {
     /// volumes, dev overlays; see [`crate::display_enh`]). Never part of the
     /// netplay identity.
     pub display_enh: DisplayEnh,
+    /// Present at exactly this size (`--present-size WxH`) instead of the
+    /// composed frame's own: the frame is resampled with the camera zoom
+    /// ([`crate::camera_zoom`]), unzoomed rows at `height / 240` pixels per
+    /// NES line. `None` keeps the composed size.
+    pub output_size: Option<(u32, u32)>,
 }
 
 impl DisplaySettings {
+    /// Whether the camera resampling stage runs: a zoom above 1, or an
+    /// explicit output size.
+    #[must_use]
+    pub fn camera_active(&self) -> bool {
+        self.display_enh.camera_zoom > 1.0 || self.output_size.is_some()
+    }
+
     /// Whether the PPU render record has to be armed for these settings.
     ///
     /// Widescreen margins, HD art and pack recording all need the per-line
@@ -1901,6 +1929,11 @@ impl Display {
     /// an HD pack can raise the effective scale above the requested one.
     #[must_use]
     pub fn size(&self) -> (u32, u32) {
+        if self.settings.camera_active() {
+            if let Some(size) = self.settings.output_size {
+                return size;
+            }
+        }
         (
             self.presenter.width() as u32,
             self.presenter.height() as u32,
@@ -1934,7 +1967,9 @@ impl Display {
     /// Observe each emulated frame even when a capture harness only paints
     /// selected frames. This keeps action starts independent of screenshot cadence.
     pub fn update_actor_animations(&mut self, game: &Game) {
-        let mut actors = [z2_render::ActorInput::default(); 2];
+        // Players first, then enemies, NPCs and bosses (slots 20-55 of OAM).
+        let enemies = game.actor_visuals();
+        let mut actors = [z2_render::ActorInput::default(); 2 + 6];
         let mut count = 0;
         for v in game.player_visuals().into_iter().flatten() {
             actors[count] = z2_render::ActorInput {
@@ -1945,11 +1980,34 @@ impl Display {
                 flip_h: v.flip_h,
                 oam_mask: v.oam_mask,
                 priority_oam: v.priority_oam,
+                ..z2_render::ActorInput::default()
+            };
+            count += 1;
+        }
+        for v in &enemies {
+            actors[count] = z2_render::ActorInput {
+                id: v.id,
+                character: &v.character,
+                clip: v.clip,
+                character_fallback: &v.base_character,
+                clip_fallback: v.clip_fallback.unwrap_or(""),
+                restart: v.restart,
+                flash_palette: v.flash_palette,
+                position: v.position,
+                flip_h: v.flip_h,
+                oam_mask: v.oam_mask,
+                margin_mask: v.margin_mask,
+                priority_oam: v.priority_oam,
             };
             count += 1;
         }
         self.presenter
             .set_actors(game.frame_count(), NTSC_HZ, &actors[..count]);
+        if self.settings.camera_active() {
+            let enh = self.settings.display_enh;
+            self.fx
+                .camera_step(game, &enh, u32::from(self.settings.wide_tiles) * 8);
+        }
     }
 
     /// Compose the game's last latched frame and return the RGBA bytes
@@ -1981,6 +2039,7 @@ impl Display {
                     region: s.region,
                     scene: s.scene,
                     camera_x: s.camera_x,
+                    vroom: s.vroom,
                 }));
         }
         self.update_actor_animations(game);
@@ -1990,7 +2049,8 @@ impl Display {
             rec.end_frame();
         }
         let enh = self.settings.display_enh;
-        if enh.is_default() {
+        let camera = self.settings.camera_active().then(|| self.size());
+        if enh.is_default() && camera.is_none() {
             return self
                 .presenter
                 .present(game.frame_indexed(), record, &game.chr)
@@ -2011,7 +2071,7 @@ impl Display {
             .map_err(|e| format!("present: {e}"))?;
         Ok(self
             .fx
-            .finish(rgba, w, h, scale, u32::from(tiles) * 8, game, &enh))
+            .finish(rgba, w, h, scale, u32::from(tiles) * 8, game, &enh, camera))
     }
 
     /// Scanline strength for the window blit ([`crate::display_enh`]).
@@ -2119,6 +2179,9 @@ pub struct NativeArgs {
     pub ice: Option<String>,
     /// `--p2-pad INDEX`: pin player 2 to this gamepad in connection order.
     pub p2_pad: Option<usize>,
+    /// `--pad-map SPEC`: rebind gamepad buttons for player 1 (and player 2's
+    /// defaults); see [`crate::config::GamepadBindings::apply_spec`].
+    pub pad_map: Option<String>,
     /// `--p2-follow N`: during movie playback in local co-op, pad 2 replays
     /// pad 1's input N frames late (see [`follow_pad`]).
     pub p2_follow: Option<usize>,
@@ -2126,6 +2189,11 @@ pub struct NativeArgs {
     pub hd_pack: Option<String>,
     /// `--hd-scale N` output multiplier (overrides `hd_scale`).
     pub hd_scale: Option<u32>,
+    /// `--camera-zoom Z` (overrides `display_enh.camera_zoom`).
+    pub camera_zoom: Option<f32>,
+    /// `--present-size WxH`: present (and open the window) at exactly this
+    /// many pixels; see [`DisplaySettings::output_size`].
+    pub present_size: Option<(u32, u32)>,
     /// `--hd-record DIR`: write a template pack of what this session drew.
     pub hd_record: Option<String>,
     /// `--fill-left-clip on|off` (overrides `widescreen_fill_left_clip`).
@@ -2226,7 +2294,7 @@ usage: z2-native [--rom PATH] [--movie M.fm2|.bk2] [--config PATH]
                  [--scale N] [--fullscreen] [--scale-mode fit|integer]
                  [--coop-local] [--coop-host ROOM | --coop-join ROOM]
                  [--signal URL] [--net-mode rollback|lockstep] [--net-delay N]
-                 [--ice SPEC] [--p2-pad INDEX] [--p2-follow N]
+                 [--ice SPEC] [--p2-pad INDEX] [--pad-map SPEC] [--p2-follow N]
                  [--seed TEXT] [--rando-flags STRING] [--rando-spoiler PATH]
                  [--sprite-ips PATH] [--no-traps] [--no-discord]
                  [--enh-json JSON|@PATH] [--display-enh-json JSON|@PATH] [--headless ...]
@@ -2272,6 +2340,9 @@ usage: z2-native [--rom PATH] [--movie M.fm2|.bk2] [--config PATH]
                    credential=... for TURN; 'none' = same machine / LAN only;
                    default: Google STUN (see README.md)
   --p2-pad INDEX   pin player 2 to gamepad INDEX (0-based, connection order).
+  --pad-map SPEC   rebind pad buttons: PAD=BUTTON pairs, e.g. South=A,East=B,
+                   Start=none (gilrs pad names, NES buttons; unlisted keep
+                   the config/default binding; applies to both players).
   --p2-follow N    with --movie and --coop-local: player 2 replays player 1's
                    movie input N frames late (0-600; 0 = exact mirror; Start
                    and Select are dropped). For demo and trailer captures.
@@ -2291,6 +2362,13 @@ usage: z2-native [--rom PATH] [--movie M.fm2|.bk2] [--config PATH]
   --display-enh-json J
                    display-only enhancements (screen shake, flash colour, effects,
                    volumes, dev overlays) as JSON or @PATH. Config key display_enh.
+  --camera-zoom Z  magnify the gameplay view around Link, Z = 1 (off) to 4
+                   (1.5, 2, 3 ...); the status bar stays at its normal size.
+                   Config key display_enh.camera_zoom.
+  --present-size WxH
+                   present at exactly W x H pixels (and open the window at that
+                   logical size); with --camera-zoom each NES line is H/240 px,
+                   so 2560x1440 at zoom 2 with a 4x pack is 3x3 px per pack px.
   --no-discord     do not show game status on your Discord profile (config key
                    discord_presence).
   --headless ...   windowless CI surface (see --headless --help).
@@ -2407,6 +2485,14 @@ pub fn parse_native_args(argv: &[String]) -> Result<NativeArgs, String> {
                 }
                 out.ice = Some(v);
             }
+            "--pad-map" => {
+                let v = native_arg_value(&mut it, "--pad-map")?;
+                let mut probe = crate::config::GamepadBindings::default();
+                if let Err(e) = probe.apply_spec(&v) {
+                    return Err(format!("{e}\n{NATIVE_USAGE}"));
+                }
+                out.pad_map = Some(v);
+            }
             "--p2-pad" => {
                 let raw = native_arg_value(&mut it, "--p2-pad")?;
                 out.p2_pad = Some(raw.parse().map_err(|_| {
@@ -2489,6 +2575,14 @@ pub fn parse_native_args(argv: &[String]) -> Result<NativeArgs, String> {
                 let v = native_arg_value(&mut it, "--enh-json")?;
                 out.enhancements =
                     Some(parse_enh_arg(&v).map_err(|e| format!("{e}\n{NATIVE_USAGE}"))?);
+            }
+            "--camera-zoom" => {
+                let v = native_arg_value(&mut it, "--camera-zoom")?;
+                out.camera_zoom = Some(parse_camera_zoom(&v)?);
+            }
+            "--present-size" => {
+                let v = native_arg_value(&mut it, "--present-size")?;
+                out.present_size = Some(parse_present_size(&v)?);
             }
             "--display-enh-json" => {
                 let v = native_arg_value(&mut it, "--display-enh-json")?;
@@ -2602,6 +2696,11 @@ pub fn run_windowed_with(
         Some(p) => NativeConfig::load_from(Path::new(p)),
         None => NativeConfig::load(),
     };
+    if let Some(spec) = &args.pad_map {
+        // Validated at parse time; applied over the file's tables, never saved.
+        config.gamepad.apply_spec(spec)?;
+        config.gamepad_p2.apply_spec(spec)?;
+    }
     let data_dir = config.effective_data_dir();
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("create {}: {e}", data_dir.display()))?;
@@ -2822,8 +2921,45 @@ pub fn resolve_display(
             Some(s) => non_empty(s),
             None => config.hd_record.as_ref().and_then(non_empty),
         },
-        display_enh: args.display_enh.unwrap_or(config.display_enh).clamped(),
+        display_enh: {
+            let mut d = args.display_enh.unwrap_or(config.display_enh);
+            if let Some(z) = args.camera_zoom {
+                d.camera_zoom = z;
+            }
+            d.clamped()
+        },
+        output_size: args.present_size,
     })
+}
+
+/// Parse a `--camera-zoom` value: a number from 1 (off) to 4.
+///
+/// # Errors
+/// Not a number, or out of range.
+pub fn parse_camera_zoom(v: &str) -> Result<f32, String> {
+    match v.trim().parse::<f32>() {
+        Ok(z) if (1.0..=4.0).contains(&z) => Ok(z),
+        _ => Err(format!(
+            "--camera-zoom: expected a number from 1 to 4, got '{v}'"
+        )),
+    }
+}
+
+/// Parse a `--present-size` value `WxH` (each 64-8192).
+///
+/// # Errors
+/// Not `WxH`, or a side out of range.
+pub fn parse_present_size(v: &str) -> Result<(u32, u32), String> {
+    let bad = || format!("--present-size: expected WxH (e.g. 2560x1440), got '{v}'");
+    let (w, h) = v.trim().split_once(['x', 'X']).ok_or_else(bad)?;
+    let (w, h) = (
+        w.parse::<u32>().map_err(|_| bad())?,
+        h.parse::<u32>().map_err(|_| bad())?,
+    );
+    if !(64..=8192).contains(&w) || !(64..=8192).contains(&h) {
+        return Err(bad());
+    }
+    Ok((w, h))
 }
 
 /// The gameplay enhancements for this run: `--enh-json` wins; otherwise the
@@ -4099,9 +4235,11 @@ fn run_event_loop(
                 let s: winit::dpi::LogicalSize<u32> = m.size().to_logical(m.scale_factor());
                 (s.width, s.height)
             });
-            let (lw, lh) = match self.window_scale {
-                Some(n) => window_size_for_scale(base, n, monitor),
-                None => initial_window_size(base.0, base.1, monitor),
+            let (lw, lh) = match (self.display.settings().output_size, self.window_scale) {
+                // `--present-size`: exactly the presented frame, unscaled.
+                (Some((w, h)), _) => (f64::from(w), f64::from(h)),
+                (None, Some(n)) => window_size_for_scale(base, n, monitor),
+                (None, None) => initial_window_size(base.0, base.1, monitor),
             };
             let attrs = Window::default_attributes()
                 .with_title(if self.has_rom { "z2rs" } else { NO_ROM_TITLE })
@@ -5196,6 +5334,32 @@ mod tests {
     }
 
     #[test]
+    fn savestates_hold_the_whole_game_and_older_ram_files_still_load() {
+        let mut emu = new_emu(44100);
+        step_frames(&mut emu, &[0x01, 0x02], None);
+        let dir = std::env::temp_dir().join(format!("z2snap-whole-{}", std::process::id()));
+        let path = save_savestate(&emu.game, &dir, 2).expect("save");
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(&z2_core::state::STATE_MAGIC));
+        let want = emu.game.save_state().to_bytes();
+        // The mapper is not RAM: a RAM-only file would leave it changed.
+        emu.game.mmc1.chr0 ^= 0x1F;
+        emu.game.ram[0] ^= 0xFF;
+        load_savestate(&mut emu.game, &dir, 2).expect("load");
+        assert_eq!(emu.game.save_state().to_bytes(), want);
+        // A `Z2SNAP01` file (RAM and WRAM) written before this still loads.
+        let old = snapshot_from_game(&emu.game, Vec::new())
+            .unwrap()
+            .encode()
+            .unwrap();
+        std::fs::write(&path, old).unwrap();
+        emu.game.ram[0] ^= 0xFF;
+        load_savestate(&mut emu.game, &dir, 2).expect("load old file");
+        assert_eq!(emu.game.save_state().to_bytes(), want);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn next_savestate_slot_cycles() {
         assert_eq!(next_savestate_slot(0), 1);
         assert_eq!(next_savestate_slot(8), 9);
@@ -6112,6 +6276,7 @@ mod tests {
                     record_dir: None,
                     margin_sprites: false,
                     display_enh: Default::default(),
+                    output_size: None,
                 })
                 .expect("no pack: cannot fail");
                 assert_eq!(d.size(), present_size_scaled(tiles, scale));
@@ -6146,6 +6311,7 @@ mod tests {
                         record_dir: None,
                         margin_sprites: false,
                         display_enh: Default::default(),
+                        output_size: None,
                     };
                     let feats = settings.features(coop);
                     let mut emu = new_emu_with(44_100, feats);

@@ -157,6 +157,33 @@ pub struct ComposeInput<'a> {
     /// The scene on screen, for the pack's layers. `None` hides every layer
     /// that names a scene.
     pub scene: Option<SceneView>,
+    /// Emulated time for layer drift and animation: `(frame, frames per
+    /// second)`. `None` is time 0 (still layers, no drift).
+    pub time: Option<(u64, f64)>,
+}
+
+/// A layer's drift in whole pack pixels and its animation frame at emulated
+/// `time` (see [`ComposeInput::time`]). Pure, so a replay, a state load or a
+/// headless render at the same frame lands on the same pixels.
+#[must_use]
+pub fn layer_motion(
+    layer: &crate::pack::Layer,
+    pack_scale: u32,
+    time: Option<(u64, f64)>,
+) -> ([i64; 2], usize) {
+    let Some((frame, hz)) = time.filter(|&(_, hz)| hz.is_finite() && hz > 0.0) else {
+        return ([0, 0], 0);
+    };
+    let seconds = frame as f64 / hz;
+    let ps = f64::from(pack_scale);
+    let offset = |v: f64| (v * ps * seconds).floor() as i64;
+    let n = layer.frames.len().max(1);
+    let index = if n > 1 {
+        ((seconds * layer.fps + 1e-9).floor() as u64 % n as u64) as usize
+    } else {
+        0
+    };
+    ([offset(layer.drift[0]), offset(layer.drift[1])], index)
 }
 
 /// Compose-time failure.
@@ -431,15 +458,24 @@ impl Compositor {
                 {
                     continue;
                 }
-                let img = &pack.sheets()[usize::from(layer.sheet)];
+                let ([dx, dy], frame) = layer_motion(layer, pack.scale(), input.time);
+                let sheet = layer.frames.get(frame).copied().unwrap_or(layer.sheet);
+                let img = &pack.sheets()[usize::from(sheet)];
                 let travelled =
                     (i64::from(camera) * i64::from(ps) * i64::from(layer.scroll)).div_euclid(100);
+                let mut left = i64::from(layer.x) * i64::from(ps) - travelled + dx;
+                if layer.repeat_x && img.width > 0 {
+                    // Same picture, small numbers: the drift wraps.
+                    left = left.rem_euclid(i64::from(img.width)) - i64::from(img.width);
+                }
                 self.layers.push(LayerPlan {
                     index: i as u16,
-                    sheet: layer.sheet,
+                    sheet,
                     depth: layer.depth,
-                    left: (i64::from(layer.x) * i64::from(ps) - travelled) as i32,
-                    top: layer.y * ps,
+                    left: left.clamp(i64::from(i32::MIN / 2), i64::from(i32::MAX / 2)) as i32,
+                    top: (i64::from(layer.y) * i64::from(ps) + dy)
+                        .clamp(i64::from(i32::MIN / 2), i64::from(i32::MAX / 2))
+                        as i32,
                     width: img.width as i32,
                     height: img.height as i32,
                     repeat_x: layer.repeat_x,
@@ -458,22 +494,45 @@ impl Compositor {
         let layered = !self.layers.is_empty();
         // Blink/visibility is still decided by the game's actual OAM. Hidden
         // actors must not leave an animated ghost during damage or transitions.
+        // An actor out in a widescreen margin is visible through the margin
+        // sprites that stand in for its hidden OAM entries.
         if !self.actors.is_empty() {
             let mut visible = 0u64;
+            let mut visible_margin = 0u64;
             for y in 0..HEIGHT {
                 for s in input.record.sprites_on(y) {
                     visible |= 1u64 << s.oam_index;
                 }
+                for r in input
+                    .margins
+                    .into_iter()
+                    .flat_map(|m| margin_sprite_rows(m, input.record, y))
+                    .filter(|r| r.index < 64)
+                {
+                    visible_margin |= 1u64 << r.index;
+                }
             }
-            self.actors.retain(|a| visible & a.oam_mask != 0);
+            self.actors
+                .retain(|a| visible & a.oam_mask != 0 || visible_margin & a.margin_mask != 0);
             for a in &mut self.actors {
-                a.behind = input
+                let window = input
                     .record
                     .sprites
                     .iter()
                     .filter(|s| a.oam_mask & (1u64 << s.oam_index) != 0)
                     .min_by_key(|s| s.oam_index)
-                    .is_some_and(|s| s.behind);
+                    .map(|s| s.behind);
+                let margin = || {
+                    input.margins.and_then(|m| {
+                        m.sprites
+                            .iter()
+                            .take(64)
+                            .enumerate()
+                            .find(|(i, _)| a.margin_mask & (1u64 << i) != 0)
+                            .map(|(_, s)| s.attr & 0x20 != 0)
+                    })
+                };
+                a.behind = window.or_else(margin).unwrap_or(false);
             }
         }
 
@@ -505,11 +564,36 @@ impl Compositor {
         self.actors.iter().any(|a| a.oam_mask & (1u64 << slot) != 0)
     }
 
+    /// Whether an actor replaces margin sprite `index` (`Margins::sprites`).
+    fn actor_owns_margin(&self, index: usize) -> bool {
+        index < 64
+            && self
+                .actors
+                .iter()
+                .any(|a| a.margin_mask & (1u64 << index) != 0)
+    }
+
     fn actor_reaches(&self, actor: crate::actors::ActorInstance, pack: &HdPack, y: usize) -> bool {
         let frame = &pack.actor_clips()[actor.clip].frames[actor.frame];
         let top = (actor.position[1] * pack.scale() as f32 - frame.pivot[1]).round();
         let row = y as f32 * pack.scale() as f32;
-        row + pack.scale() as f32 > top && row < top + frame.image.height as f32
+        row + pack.scale() as f32 > top && row < top + frame.height as f32
+    }
+
+    /// The hit flash: the cartridge draws the actor in another sprite
+    /// palette, so recolour the frame along that palette's three colours by
+    /// brightness (dark, mid, light), as the NES would show its tiles.
+    fn flash_colour(rgba: [u8; 4], ramp: &[[u8; 4]; 3]) -> [u8; 4] {
+        let luma =
+            |p: [u8; 4]| 299 * u32::from(p[0]) + 587 * u32::from(p[1]) + 114 * u32::from(p[2]);
+        let t = luma(rgba) * 2 / 255; // 0..=2000
+        let (a, b, f) = if t < 1000 {
+            (ramp[0], ramp[1], t)
+        } else {
+            (ramp[1], ramp[2], t - 1000)
+        };
+        let mix = |i: usize| ((u32::from(a[i]) * (1000 - f) + u32::from(b[i]) * f) / 1000) as u8;
+        [mix(0), mix(1), mix(2), rgba[3]]
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -524,7 +608,20 @@ impl Compositor {
         out: &mut [u8],
     ) {
         let frame = &pack.actor_clips()[actor.clip].frames[actor.frame];
-        let image = &frame.image;
+        let Some(image) = frame.image() else {
+            return;
+        };
+        let ramp = actor.flash_palette.map(|pal| {
+            let mut ramp = [1u8, 2, 3].map(|sub| {
+                input
+                    .palette
+                    .rgba(rec.palette_entry(0x10 + usize::from(pal & 3) * 4 + usize::from(sub)))
+            });
+            ramp.sort_by_key(|p| {
+                299 * u32::from(p[0]) + 587 * u32::from(p[1]) + 114 * u32::from(p[2])
+            });
+            ramp
+        });
         let p = pack.scale() as f32;
         let pivot_x = if actor.flip_h {
             image.width as f32 - frame.pivot[0]
@@ -571,6 +668,10 @@ impl Compositor {
                 if actor.behind && self.col_opaque[sx] {
                     continue;
                 }
+                let rgba = match &ramp {
+                    Some(ramp) => Self::flash_colour(rgba, ramp),
+                    None => rgba,
+                };
                 let dst = ((y * n + fy) * self.out_w + dx) * 4;
                 out[dst..dst + 4].copy_from_slice(&rgba);
             }
@@ -1216,7 +1317,8 @@ impl Compositor {
         let own = sprites.iter().any(|s| hd_cell(s, rec).is_some())
             || margin_rows().any(|r| hd_cell(&r.sprite, rec).is_some())
             || self.actors.iter().any(|a| self.actor_reaches(*a, pack, y))
-            || sprites.iter().any(|s| self.actor_owns(s.oam_index));
+            || sprites.iter().any(|s| self.actor_owns(s.oam_index))
+            || margin_rows().any(|r| self.actor_owns_margin(r.index));
         // A neighbouring line's sprite whose bleed reaches this line.
         let reaching = |d: usize, below: bool| {
             let ly = if below { y + d } else { y.wrapping_sub(d) };
@@ -1265,19 +1367,21 @@ impl Compositor {
             };
             ok.then_some((wx + margin_px as i32) as usize)
         };
-        // Window sprites (real OAM) first, then the margin sprites.
+        // Window sprites (real OAM) first, then the margin sprites. The
+        // third field is `None` for a window sprite, else the margin index.
         let rows = || {
             sprites
                 .iter()
                 .filter(|s| !edge_drops_window_sprite(fill, s, sprites, input.chr_rom))
-                .map(|s| (*s, i32::from(s.x), true))
-                .chain(margin_rows().map(|r| (r.sprite, r.x, false)))
+                .map(|s| (*s, i32::from(s.x), None))
+                .chain(margin_rows().map(|r| (r.sprite, r.x, Some(r.index))))
         };
         let src_width = self.src_width;
 
         // 1. Take the baked NES sprites off the line (margin sprites too: the
         //    wide indexed frame has them baked in).
-        for (s, left, window) in rows() {
+        for (s, left, index) in rows() {
+            let window = index.is_none();
             let id = sprite_tile_id(&s);
             for dx in 0..8i32 {
                 let Some(sx) = column(left, dx, window) else {
@@ -1305,7 +1409,8 @@ impl Compositor {
             *c = false;
         }
         let mut actor_drawn = 0u32;
-        for (s, left, window) in rows() {
+        for (s, left, index) in rows() {
+            let window = index.is_none();
             for i in 0..self.actors.len() {
                 if actor_drawn & (1 << i) == 0
                     && (self.actors[i].priority_oam <= s.oam_index || !window)
@@ -1314,7 +1419,11 @@ impl Compositor {
                     actor_drawn |= 1 << i;
                 }
             }
-            if window && self.actor_owns(s.oam_index) {
+            let owned = match index {
+                None => self.actor_owns(s.oam_index),
+                Some(index) => self.actor_owns_margin(index),
+            };
+            if owned {
                 continue;
             }
             let s = &s;
