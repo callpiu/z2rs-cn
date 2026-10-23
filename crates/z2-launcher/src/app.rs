@@ -128,6 +128,9 @@ fn existing_parent(path: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Dark theme with larger, easier-to-read text.
+///
+/// Also loads a system CJK font: egui's bundled faces are Latin-only, so the
+/// Chinese labels this build ships would otherwise render as hollow boxes.
 pub fn apply_style(ctx: &egui::Context) {
     ctx.set_theme(egui::Theme::Dark);
     ctx.all_styles_mut(|style| {
@@ -143,6 +146,14 @@ pub fn apply_style(ctx: &egui::Context) {
         style.spacing.button_padding = egui::vec2(10.0, 4.0);
         style.spacing.interact_size.y = 26.0;
     });
+    // Must come after the style so it does not get replaced by a later
+    // `set_fonts`; `install` touches only the font definitions.
+    if crate::font::install(ctx).is_none() {
+        eprintln!(
+            "z2-launcher: 没找到可用的中文字体，界面里的中文会显示成方块。\
+             安装任意一款中文字体（如微软雅黑 / Noto Sans CJK）后重启即可。"
+        );
+    }
 }
 
 impl eframe::App for LauncherApp {

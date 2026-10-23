@@ -29,6 +29,7 @@
 
 pub mod app;
 pub mod enh_ui;
+pub mod font;
 pub mod game;
 pub mod i18n;
 pub mod rando_ui;

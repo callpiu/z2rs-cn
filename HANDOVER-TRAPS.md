@@ -341,3 +341,92 @@ z2_core::title_traps::register_title_traps(game);              // 新增
 - 美版 ROM 路径：`E:\Zelda II - The Adventure of Link (USA).nes`
 - 构建：`CARGO_TARGET_DIR=D:/z2rs-build-060`，
   `PATH` 加 `C:\Users\ezplayer\.cargo\bin;C:\msys64\ucrt64\bin`
+
+
+---
+
+## 九、启动器「方块字」：i18n 做对了，字体没跟上
+
+### 现象
+
+驱动完成后用户截图反馈：启动器界面**全部中文显示成空心方块**（tofu）。
+
+### 原因
+
+这不是 i18n 的问题 —— 文字确实换成了中文。问题是
+**egui 内置字体不含汉字**：
+
+* eframe 的 `default_fonts` 带的是 Ubuntu-Light / NotoEmoji / Hack
+* 全是拉丁 + 表情 + 等宽，没有任何 CJK 字形
+* 所以每个汉字都落到"无字形"分支，画成空心框
+
+我在上一轮做 i18n 时**完全没想到这一步**。教训：做界面本地化，
+**字体和文本是两件事**，只改文本必然得到方块。
+
+### 修复
+
+新增 `crates/z2-launcher/src/font.rs`：
+
+```rust
+pub fn install(ctx: &egui::Context) -> Option<PathBuf>
+```
+
+* 按平台列候选字体路径，逐个 `fs::read`，第一个读成功且 >1KB 的用上
+* `FontData::from_owned(bytes)` 塞进 `font_data`
+* 把 `"system-cjk"` **append**（不是 insert 到开头）到
+  `Proportional` 和 `Monospace` 两个族的末尾
+* `ctx.set_fonts(fonts)`
+
+`apply_style()` 里调用它；找不到字体时打印一行提示而不是静默。
+
+**为什么 append 到末尾**：拉丁字符继续用 egui 自带字体（小字号 hinting
+更好），只有它画不出来的字符才 fallback 到系统字体。插到开头会让英文
+也变得难看。
+
+**为什么不打包字体**：中文思源/雅黑都是好几 MB，还要带授权；
+每台桌面机器本来就有。
+
+### 候选顺序
+
+| 平台 | 顺序 |
+|---|---|
+| Windows | `msyh.ttc`（微软雅黑）→ `msyh.ttf` → `simhei.ttf` → `simsun.ttc` → `Deng.ttf` |
+| macOS | `PingFang.ttc` → `Hiragino Sans GB.ttc` → `Arial Unicode.ttf` |
+| Linux | `NotoSansCJK-Regular.ttc` → `NotoSansCJKsc-Regular.otf` → `wqy-zenhei.ttc` → `uming.ttc` |
+
+本机实测命中 `C:\Windows\Fonts\msyh.ttc`（19.7 MB）。
+
+### 验证（这条值得单独说）
+
+只检查「字体文件找到了」是**不够的**：`.ttc` 是字体集合，
+epaint 用 ab_glyph 只读**第一个 face**，而第一个 face 未必含汉字。
+
+所以新增 `crates/z2-launcher/tests/font_render.rs`，
+真的用 egui 排版一次并量宽度：
+
+```
+「开始游戏」= 64.00   「Play」= 29.28   缺字对照 = 82.28
+```
+
+判据：**汉字是全角的，16px 字号下每个正好 1 个 em**，4 字 = 64px。
+这是真字形的特征。断言 `|实测 - em×字数| <= 0.5em`。
+
+`缺字对照` 用私有区码位（`\u{E000}` 起）量，得到 82.28 ——
+**豆腐块反而比汉字宽**。所以我最初写的「中文应比缺字宽」是反的，
+被测试自己抓出来了，改成"约等于 em×字数"。
+
+### 踩到的测试坑
+
+`ctx.run_ui()` 返回的 `FullOutput` 里带着未应用的 `textures_delta`，
+直接 drop 会触发 epaint 的断言：
+
+```
+Dropped TexturesDelta with 1 unapplied deltas.
+```
+
+真实应用里 eframe 会处理它，headless 测试必须手动 `out.textures_delta.clear()`。
+
+### 仍需人工确认
+
+我只能验证"字体装上且字形正确"，**看不到实际窗口**。
+需要用户实际打开启动器确认界面正常。
