@@ -1017,3 +1017,53 @@ D:\z2rs-中文版-0.6.0\
 ```
 
 与 `D:\z2rs-中文版`（旧版基线）并存，互不影响。
+---
+
+## 2026-10-23：作者补档，材质包修复版已验证
+
+作者重发了两个修复版压缩包：
+
+    D:\下载\Compressed\z2rs-hd-pack-2026.10.22-outlined_2.zip
+    D:\下载\Compressed\z2rs-hd-pack-2026.10.22-unoutlined_2.zip
+
+首发版缺 4 个水面动画帧（`environment/layers/W_0.png ~ W_3.png`），
+修复版已补齐。核对结果：
+
+| 项 | 首发版 | 修复版 |
+|---|---|---|
+| `pack.json` 引用 PNG | 22,920 | 22,920 |
+| 磁盘实际 PNG | 22,916 | 22,920 |
+| `RELEASE.json` 声明 | 22,916 | 22,920 |
+| 缺失文件 | 4 | **0** |
+| `W_0~3.png` | 无 | 有（各 1024x832） |
+| SHA256SUMS 含 `W_0.png` | 否 | 是 |
+
+**修复版可以直接加载，不再需要 `-playable` 补丁目录。**
+
+已验证（汉化 ROM + 官方 0.6.0 + 4x）：
+
+* 两个修复版原包均加载正常，`interpreter faults: 0`
+* 宫殿场景 HD 差异 603,191（unoutlined）/ 603,473（outlined）像素
+* 宽屏 16:9 输出 1728x960，扩展区 HD 正常
+* 水面动画：四帧互不相同（各差约 8,000-9,000 像素），
+  渲染随时间推进（相邻 12 帧差异 7,232 / 8,704 / 12,432 像素）
+   —— 证明移植时保留下来的 0.6.0 `ComposeInput::time` 字段
+   确实在驱动动画
+
+交付位置（已从 zip 解压拷贝，非补丁版）：
+
+    D:\z2rs-hd-pack-2026.10.23-outlined
+    D:\z2rs-hd-pack-2026.10.23-unoutlined
+
+`D:\z2rs-中文版-0.6.0\版本说明.txt` 的「已知问题」第 1 条
+已从「用 -playable 绕过」改为「用作者修复版」。
+
+### 一个 PowerShell 坑
+
+`Expand-Archive` 解这个 200MB+ 的包时静默失败（目标目录为空，
+且不报错），`Add-Type System.IO.Compression.FileSystem` 在新
+PowerShell 会话里也可能找不到类型。用 `tar.exe -xf` 最可靠：
+
+    tar.exe -xf xxx.zip -C <目标目录>
+
+tar 解出来的顶层是 zip 里那层同名目录，注意路径要多套一层。
