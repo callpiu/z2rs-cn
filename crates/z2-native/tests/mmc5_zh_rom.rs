@@ -108,23 +108,15 @@ fn boots_without_panic_and_draws_something() {
     eprintln!("ctrl=${ctrl:02X} mask=${mask:02X}");
 }
 
-/// 三组此前被跳过的 trap 必须在汉化 ROM 上真的注册。
-///
-/// 这一条是防回归的：上一轮改过 `register_translated_traps`，但那版改动
-/// 在后续 `git checkout --` / `stash` 中丢了，只留下注释说"已启用"，
-/// 函数体其实还是 6 组 —— 于是"24 个端到端全过"是在未提交的改动下跑的。
-///
-/// 直接数注册表，不依赖行为观察：三组各至少注册一条 trap，
-/// 且总数与美版路径一致（9 组）。
+/// 保留各组游戏钩子，但切库相关的不兼容例程必须交回 ROM。
 #[test]
-fn all_nine_trap_groups_are_registered_on_translated_rom() {
+fn translated_traps_keep_gameplay_hooks_and_leave_mapper_specific_code_to_rom() {
     let Some(bytes) = rom_bytes() else { return };
     let emu = emu_from_generic_ines(&bytes, 44100, z2_native::app::Features::default())
         .expect("加载");
 
     let n = emu.game.traps.len();
-    // 每组至少一条，9 组。用美版 ROM 的数做下界对照更稳，但这里先要求
-    // 一个明确高于旧版（6 组）的数量。
+    // 兼容性筛选后仍应保留完整的游戏钩子，不能以禁用全部替代例程绕过。
     eprintln!("汉化 ROM 注册的 trap 总数: {n}");
     assert!(
         n > 60,
@@ -133,7 +125,7 @@ fn all_nine_trap_groups_are_registered_on_translated_rom() {
 
     // 三组各自的代表地址必须被注册。
     for (name, addr) in [
-        ("title: bank7_code7", 0xC33Cu16),
+        ("title: reset_lives", 0xC358u16),
         ("sideview: LC9A5", 0xC9A5),
         ("sideview: Get_Area_Code", 0xCC97),
         ("overworld: LD625", 0xD625),
@@ -142,6 +134,9 @@ fn all_nine_trap_groups_are_registered_on_translated_rom() {
             emu.game.traps.get(addr).is_some(),
             "{name} (${addr:04X}) 没注册 —— 该组没启用"
         );
+    }
+    for addr in [0xC33C, 0xC3B5, 0xDFEF, 0xE001, 0xFFB1, 0xFFCC] {
+        assert!(emu.game.traps.get(addr).is_none(), "${addr:04X} 必须执行汉化 ROM");
     }
 }
 
@@ -709,7 +704,57 @@ fn reaches_overworld() {
         emu.game.ram[0x0736]
     );
     assert!(reached, "没能走到大地图");
+    // 单看 mode=5 / 非零像素会放过长柱错图：切换后的 CHR 也必须换成大地图。
+    settle(&mut emu, 180);
+    assert_eq!(emu.game.ram[0x0736], MODE_OVERWORLD);
+    assert_eq!(emu.game.mmc5.chr_banks, [64, 65, 66, 67, 68, 69, 70, 71]);
+    assert_eq!(emu.game.mmc5.chr_upper, [68, 69, 70, 71]);
     assert_eq!(emu.game.exec_errors, 0, "去大地图路上解释器报错");
+}
+
+/// 使用同一段真实输入，与未替换的 ROM 执行对照场景完成后的地图。
+#[test]
+fn overworld_tiles_and_terrain_match_interpreted_rom() {
+    let Some(bytes) = rom_bytes() else { return };
+    let mut hybrid = emu_from_generic_ines(&bytes, 44100, Default::default()).unwrap();
+    let mut interpreted = emu_from_generic_ines(
+        &bytes,
+        44100,
+        z2_native::app::Features {
+            no_traps: true,
+            ..Default::default()
+        },
+    ).unwrap();
+    assert!(!interpreted.game.traps.enabled);
+    assert!(interpreted.rom.no_traps);
+    for emu in [&mut hybrid, &mut interpreted] {
+        boot_into_game(emu);
+        assert_eq!(emu.game.ram[0x0736], MODE_SIDEVIEW);
+        let mut reached = false;
+        for _ in 0..1500 {
+            emu.game.step(PAD_RIGHT);
+            if emu.game.ram[0x0736] == MODE_OVERWORLD {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached);
+        settle(emu, 240);
+        assert_eq!(emu.game.exec_errors, 0);
+    }
+    assert_eq!(hybrid.game.mmc5.chr_banks, interpreted.game.mmc5.chr_banks);
+    assert_eq!(hybrid.game.mmc5.chr_upper, interpreted.game.mmc5.chr_upper);
+    // 解压后的地图与行指针必须相同，不能只通过“有画面”的弱检查。
+    assert_eq!(
+        &hybrid.game.wram[0x1C00..0x1F80],
+        &interpreted.game.wram[0x1C00..0x1F80]
+    );
+    assert_eq!(&hybrid.game.wram[..0x80], &interpreted.game.wram[..0x80]);
+    // 允许动态精灵有少量差异，大面积地形背景必须一致。
+    let a = hybrid.game.frame_indexed();
+    let b = interpreted.game.frame_indexed();
+    let equal = a.iter().zip(b).filter(|(x, y)| x == y).count();
+    assert!(equal > a.len() * 95 / 100, "大地图像素只有 {equal}/{} 相同", a.len());
 }
 
 /// 7 项增强在译制 ROM 上必须真的改到 ROM 字节（而不是被字节校验静默跳过）。

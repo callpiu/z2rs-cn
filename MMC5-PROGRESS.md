@@ -1,3 +1,5 @@
+> 2026-10-23 大地图修复更新：进入大地图后的长柱/贴图错乱已定位并修复，见 [HANDOVER-OVERWORLD-FIX.md](HANDOVER-OVERWORLD-FIX.md)。下文关于 CHR 无切换和兼容分支的旧结论已被本次真实场景验证推翻。
+
 # MMC5 移植 · 进度与交接
 
 > 目标：让 z2rs 直接运行汉化版 ROM

@@ -1016,33 +1016,12 @@ fn register_native_traps(game: &mut Game) {
     z2_core::boot_traps::register_boot_traps(game);
 }
 
-/// Trap set for a **translated (MMC5)** image.
+/// Hybrid trap set for a translated MMC5 image.
 ///
-/// Every group is registered, including `title_traps`, `sideview_traps` and
-/// `overworld_traps`. They used to be left out on the theory that their bodies
-/// `jsr_sub` into fixed-bank successors whose bytes the translated image had
-/// rearranged. Measured against the real ROM, the theory was half right and
-/// half wrong:
-///
-/// * Of the 23 fixed-bank entry points these groups use, **17 are
-///   byte-identical** to the US image; one more (`$DE6C`) differs only in
-///   leading NOP/data padding before identical code.
-/// * The remaining 5 are the MMC1 serial switchers (`$FF9D`, `$FFB1`,
-///   `$FFC5`, `$FFC9`, `$FFCC`). Four of them are the ones the ports actually
-///   call, and on this image they are **not code**: `$FFB1` holds data and
-///   `$FFCC`/`$FFC9`/`$FFC5` are the image's own MMC5 switchers
-///   (`ASL A / ORA #$80 / STA $5115`) with different register conventions.
-///   Interpreting them either hits an illegal opcode (`$52` at `$FFB1`) or
-///   silently changes `A`, so [`z2_core::bank7_common::jsr_sub`] answers those
-///   four calls itself on MMC5.
-/// * The fifth (`$FF9D`, `ConfigureMMC1`) is skipped by
-///   [`register_bank7_traps`]'s existing `uses_mmc5_switcher` byte check,
-///   which is still correct: it has no MMC5 equivalent.
-///
-/// The translated image also never writes `$5120-$512B` (verified: no
-/// `8D 2X 51` anywhere in its fixed bank) — it carries all 512 KiB of CHR
-/// statically and shifts the window with `$5130` — so `SwapCHR` is a no-op
-/// there rather than a bank load.
+/// Retain gameplay/co-op hooks, but leave mapper-specific title and terrain
+/// routines to the ROM. Reaching a mode or producing nonzero pixels does not
+/// prove a US port is compatible: the overworld must finish loading its CHR
+/// and RLE terrain through the translated image's own switchers.
 fn register_translated_traps(game: &mut Game) {
     // `bank7_traps` byte-checks its MMC1 serial switchers and skips them.
     z2_core::bank7_traps::register_bank7_traps(game);
@@ -1054,6 +1033,12 @@ fn register_translated_traps(game: &mut Game) {
     z2_core::palace_traps::register_palace_traps(game);
     z2_core::title_traps::register_title_traps(game);
     z2_core::boot_traps::register_boot_traps(game);
+    // These ports contain MMC1-only calls. Let the translated ROM execute
+    // its CHR loader ($C03D/$FEB0) and PRG switchers with its own register,
+    // flag and stack conventions.
+    for addr in [0xC33C, 0xC3B5, 0xDFEF, 0xE001] {
+        game.traps.unregister(addr);
+    }
 }
 
 /// Build an emulator from a ROM file (headered or bare).
@@ -1076,7 +1061,7 @@ pub fn emu_from_rom_file_with(
     let file = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     // A translated (MMC5) image can't go through the vanilla pipeline: the
     // trap table is keyed by original-ROM addresses and the CHR length is
-    // pinned at 128 KiB. Run it on the plain interpreter instead.
+    // pinned at 128 KiB. Use the mapper-aware hybrid loader instead.
     if ines_is_mmc5(&file) {
         let emu = emu_from_generic_ines(&file, audio_rate, feats)?;
         let body = z2_assets::rom::strip_ines_header(&file).to_vec();
@@ -1089,54 +1074,16 @@ pub fn emu_from_rom_file_with(
     Ok((emu, owned))
 }
 
-/// Build an emulator from an arbitrary iNES image, with **no** traps and
-/// **no** patches.
+/// Build an emulator directly from a translated iNES image.
 ///
-/// # Why a separate path
+/// Unlike the vanilla pipeline, this preserves the cartridge header and full
+/// CHR image. The hybrid trap set retains gameplay/co-op hooks while leaving
+/// mapper-specific title and terrain routines to the ROM. `no_traps` disables
+/// the complete table before reset for an independent interpreter comparison.
 ///
-/// The native path (`emu_from_trusted_body_with`) is built around the exact
-/// original cartridge: it pins CHR at 128 KiB, rebuilds the iNES header from
-/// a bare body, installs the bank-7 trap table (Rust reimplementations keyed
-/// by *original* addresses) and then applies wide-gameplay / enhancement
-/// patches at original-ROM offsets.
-///
-/// A translated ROM (mapper 5, 256 KiB PRG + 512 KiB CHR) matches none of
-/// that: 51% of its fixed bank differs from the original, so every trap would
-/// run the wrong code. This entry point instead hands the whole image to the
-/// 6502 interpreter and lets the ROM run itself.
-///
-/// Slower than the trap path, but correct for any image.
-///
-/// # What is applied
-///
-/// No general trap table and no enhancement patches — but these are honoured:
-///
-/// * `feats.record` arms the PPU render record. Widescreen margins and HD
-///   packs are both decoded from it (see `DisplaySettings::needs_record`:
-///   `wide_tiles > 0 || pack_dir.is_some() || record_dir.is_some()`), so
-///   dropping it silently disabled both on translated ROMs.
-/// * `feats.margin_sprites` draws side-view objects that live outside the
-///   window into the margins.
-/// * `feats.wide_gameplay` registers the two overworld blob traps. They hook
-///   `$8284`/`$841B` in bank 0, which the translated image keeps at the same
-///   CPU addresses; both bodies decline when bank 0 is not mapped (see
-///   `wide_gameplay::bank0_mapped`, now mapper-aware), so they are safe here.
-///   Its PRG patch (`$96DC`) validates the bytes first and skips otherwise.
-/// * `feats.coop` registers the six co-op traps. They hook the fixed-bank
-///   Link driver and enemy routines the translated image keeps (it rewrites
-///   text and glyphs, not the physics), and re-enter them through the
-///   ordinary interpreter, so no original address is hard-coded as a
-///   replacement body.
-///
-/// `feats.enhancements` (ZALiA) is now applied too. It used to be refused on
-/// the theory that every group patches literal original-ROM offsets with no
-/// identity check. That is only true of the *offset arithmetic*: since
-/// `enh::prg_offset` became mapper-aware, the patches address the right bytes
-/// on an MMC5 image, and each group that patches PRG already validates the
-/// bytes it is about to overwrite (`patch_sword`, `patch_damage`, the
-/// dialogue delays, `bytes_are` in `fixes`), so a mismatch skips rather than
-/// corrupts. The trap-based groups run the ROM body itself through
-/// `call_original`.
+/// Record, margin sprites, wide gameplay, co-op and validated gameplay
+/// enhancements use the same feature switches as the vanilla path. The ROM
+/// randomizer is unavailable for translated images.
 pub fn emu_from_generic_ines(
     bytes: &[u8],
     audio_rate: u32,
@@ -1149,13 +1096,8 @@ pub fn emu_from_generic_ines(
     // `$D6C1`/`$E677`/`$E558` when a base trap already sits there, so without
     // this P2 could move but never damage an enemy.
     //
-    // Which groups are safe on a translated image was established by running
-    // each one alone against the translated ROM:
-    //
-    // * `player` / `enemy` / `town` / `palace` / `sideview` / `overworld` /
-    //   `boot` / `title` — 0 interpreter errors, game reaches gameplay.
-    // * `bank7` — its MMC1 serial switchers (`$FF9D`…`$FFCC`) do not exist on
-    //   an MMC5 image; `bank7_traps` now byte-checks before registering them.
+    // Compatibility is checked across completed scene transitions; reaching
+    // gameplay with zero interpreter errors alone does not validate graphics.
     register_translated_traps(&mut game);
     // Co-op traps must be registered before reset, like the native path.
     if feats.coop {
@@ -1170,13 +1112,17 @@ pub fn emu_from_generic_ines(
     if feats.enhancements.any_gameplay_active() {
         game.set_enhancements(feats.enhancements);
     }
+    game.traps.enabled = !feats.no_traps;
     game.reset();
     let mut emu = Emu {
         game,
         apu: z2_apu::Apu::new(crate::audio::clamp_rate(audio_rate)),
         trapset_id: 0,
         trapset_base: 0,
-        rom: RomIdentity::default(),
+        rom: RomIdentity {
+            no_traps: feats.no_traps,
+            ..RomIdentity::default()
+        },
     };
     arm_record(&mut emu, feats.record);
     emu.game.set_margin_sprites(feats.margin_sprites);

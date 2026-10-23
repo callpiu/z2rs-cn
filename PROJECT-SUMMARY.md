@@ -1,3 +1,5 @@
+> 2026-10-23 大地图修复更新：进入大地图后的长柱/贴图错乱已定位并修复，见 [HANDOVER-OVERWORLD-FIX.md](HANDOVER-OVERWORLD-FIX.md)。下文关于 CHR 无切换和兼容分支的旧结论已被本次真实场景验证推翻。
+
 > 2026-10-23 续作更新：增强页和随机化页汉化及编译修复已完成，新增验证与发布情况见 [HANDOVER-I18N-COMPLETE.md](HANDOVER-I18N-COMPLETE.md)。下文“当前工作树”与“未完成”描述保留为历史记录，以本更新为准。
 
 # z2rs 汉化项目 · 全程汇总
