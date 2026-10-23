@@ -30,9 +30,11 @@
 pub mod app;
 pub mod enh_ui;
 pub mod game;
+pub mod i18n;
 pub mod rando_ui;
 pub mod settings;
 pub mod ui;
 
-pub use settings::{build_args, validate, Settings};
+pub use i18n::Lang;
+pub use settings::{build_args, validate, validate_lang, Settings};
 pub use ui::{launcher_ui, Action, LauncherState};

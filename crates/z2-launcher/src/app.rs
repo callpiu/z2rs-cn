@@ -15,6 +15,8 @@ pub const WINDOW_TITLE: &str = "z2rs launcher";
 /// The launcher as an eframe app.
 pub struct LauncherApp {
     state: LauncherState,
+    /// The window title currently shown, so a language change can update it.
+    title: String,
 }
 
 impl LauncherApp {
@@ -24,6 +26,7 @@ impl LauncherApp {
         let dir = data_dir();
         let settings = Settings::load(&Settings::path_in(&dir));
         LauncherApp {
+            title: settings.language.t(WINDOW_TITLE).to_string(),
             state: LauncherState::new(settings, dir),
         }
     }
@@ -144,6 +147,14 @@ pub fn apply_style(ctx: &egui::Context) {
 
 impl eframe::App for LauncherApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // The title is set once at startup in the build's language; keep it in
+        // step with the player's choice so switching languages updates it.
+        let want = self.state.settings.language.t(WINDOW_TITLE);
+        if want != self.title {
+            self.title = want.to_string();
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Title(want.to_string()));
+        }
         if let Some(action) = launcher_ui(ui, &mut self.state) {
             let ctx = ui.ctx().clone();
             self.handle(&ctx, action);

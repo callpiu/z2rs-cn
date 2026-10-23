@@ -11,9 +11,9 @@ use egui::{Color32, RichText};
 
 use crate::game::{self, GameExit, RunningGame};
 use crate::settings::{
-    build_args, format_command, pack_folder_warning, scan_packs, validate, Multiplayer, NetMode,
-    PackEntry, Settings, Widescreen, DEFAULT_SIGNAL_URL, GAME_CONFIG_FILE_NAME, MAX_HD_SCALE,
-    MAX_SCALE,
+    build_args, format_command, pack_folder_warning, scan_packs, validate_lang, Multiplayer,
+    NetMode, PackEntry, Settings, Widescreen, DEFAULT_SIGNAL_URL, GAME_CONFIG_FILE_NAME,
+    MAX_HD_SCALE, MAX_SCALE,
 };
 
 /// Something the view wants the caller to do.
@@ -175,7 +175,7 @@ impl LauncherState {
     pub fn play(&mut self) -> Result<(), String> {
         self.error = None;
         self.last_exit = None;
-        let problems = validate(&self.settings);
+        let problems = validate_lang(&self.settings, self.settings.language);
         if !problems.is_empty() {
             return Err(problems.join("\n"));
         }
@@ -216,12 +216,17 @@ pub fn launcher_ui(ui: &mut egui::Ui, state: &mut LauncherState) -> Option<Actio
         .show(ui, |ui| play_bar(ui, state, &mut action));
 
     egui::CentralPanel::default_margins().show(ui, |ui| {
+        let lang = state.settings.language;
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut state.tab, Tab::Play, RichText::new("Play").size(16.0));
+            ui.selectable_value(
+                &mut state.tab,
+                Tab::Play,
+                RichText::new(lang.t("Play")).size(16.0),
+            );
             let label = if state.settings.enhancements.any_gameplay_active() {
-                "Enhancements (on)"
+                lang.t("Enhancements (on)")
             } else {
-                "Enhancements"
+                lang.t("Enhancements")
             };
             ui.selectable_value(
                 &mut state.tab,
@@ -229,9 +234,9 @@ pub fn launcher_ui(ui: &mut egui::Ui, state: &mut LauncherState) -> Option<Actio
                 RichText::new(label).size(16.0),
             );
             let label = if state.settings.rando.enabled {
-                "ROM randomizer (on)"
+                lang.t("ROM randomizer (on)")
             } else {
-                "ROM randomizer"
+                lang.t("ROM randomizer")
             };
             ui.selectable_value(
                 &mut state.tab,
@@ -245,6 +250,7 @@ pub fn launcher_ui(ui: &mut egui::Ui, state: &mut LauncherState) -> Option<Actio
             .show(ui, |ui| match state.tab {
                 Tab::Play => {
                     rom_section(ui, state, &mut action);
+                    language_section(ui, state);
                     display_section(ui, &mut state.settings);
                     hd_section(ui, state, &mut action);
                     players_section(ui, &mut state.settings);
@@ -441,47 +447,72 @@ fn randomizer_tab(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Opt
 }
 
 fn rom_section(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<Action>) {
-    section(ui, "Your game file", |ui| {
+    let lang = state.settings.language;
+    section(ui, lang.t("Your game file"), |ui| {
         ui.horizontal(|ui| {
             let browse_w = 96.0;
             ui.add(
                 egui::TextEdit::singleline(&mut state.settings.rom_path)
-                    .hint_text("Path to your Zelda II .nes file")
+                    .hint_text(lang.t("Path to your Zelda II .nes file"))
                     .desired_width(ui.available_width() - browse_w),
             );
-            if ui.button("Browse…").clicked() {
+            if ui.button(lang.t("Browse…")).clicked() {
                 *action = Some(Action::BrowseRom);
             }
         });
         hint(
             ui,
-            "Use your own copy of Zelda II: The Adventure of Link (USA) as a .nes file. \
-             The launcher only remembers where it is. The file is never copied or uploaded.",
+            lang.t(
+                "Use your own copy of Zelda II: The Adventure of Link (USA) as a .nes file. \
+                 The launcher only remembers where it is. The file is never copied or uploaded.",
+            ),
         );
     });
 }
 
+/// Interface language. Changing it re-draws every label on the next frame,
+/// because each section reads `settings.language` when it builds its widgets.
+fn language_section(ui: &mut egui::Ui, state: &mut LauncherState) {
+    let mut lang = state.settings.language;
+    section(ui, lang.t("Language"), |ui| {
+        egui::ComboBox::from_id_salt("ui-language")
+            .selected_text(lang.label())
+            .width(200.0)
+            .show_ui(ui, |ui| {
+                for l in crate::i18n::Lang::ALL {
+                    ui.selectable_value(&mut lang, l, l.label());
+                }
+            });
+        hint(ui, lang.t("Applies to the launcher only; the game itself is unchanged."));
+    });
+    state.settings.language = lang;
+}
+
 fn display_section(ui: &mut egui::Ui, s: &mut Settings) {
-    section(ui, "Display", |ui| {
+    let lang = s.language;
+    section(ui, lang.t("Display"), |ui| {
         egui::Grid::new("display-grid")
             .num_columns(2)
             .spacing([12.0, 8.0])
             .show(ui, |ui| {
-                ui.label("Window size");
+                ui.label(lang.t("Window size"));
                 ui.add(egui::Slider::new(&mut s.scale, 1..=MAX_SCALE).suffix("x"));
                 ui.end_row();
 
-                ui.label("Fullscreen");
-                ui.checkbox(&mut s.fullscreen, "Start in fullscreen");
+                ui.label(lang.t("Fullscreen"));
+                ui.checkbox(&mut s.fullscreen, lang.t("Start in fullscreen"));
                 ui.end_row();
 
-                ui.label("Scaling");
-                ui.checkbox(&mut s.integer_scale, "Whole-number scaling only");
+                ui.label(lang.t("Scaling"));
+                ui.checkbox(
+                    &mut s.integer_scale,
+                    lang.t("Whole-number scaling only"),
+                );
                 ui.end_row();
 
-                ui.label("Widescreen");
+                ui.label(lang.t("Widescreen"));
                 egui::ComboBox::from_id_salt("widescreen")
-                    .selected_text(s.widescreen.label())
+                    .selected_text(lang.t(s.widescreen.label()))
                     .show_ui(ui, |ui| {
                         for w in [
                             Widescreen::Off,
@@ -489,58 +520,69 @@ fn display_section(ui: &mut egui::Ui, s: &mut Settings) {
                             Widescreen::W16x9,
                             Widescreen::W21x9,
                         ] {
-                            ui.selectable_value(&mut s.widescreen, w, w.label());
+                            ui.selectable_value(&mut s.widescreen, w, lang.t(w.label()));
                         }
                     });
                 ui.end_row();
             });
         if s.widescreen != Widescreen::Off {
             ui.add_space(4.0);
-            ui.checkbox(&mut s.wide_gameplay, "Enemies use the wide screen");
-            hint(
-                ui,
-                "Enemies can appear and move in the extra space at the sides. This changes \
-                 the game a little; online partners must pick the same.",
+            ui.checkbox(
+                &mut s.wide_gameplay,
+                lang.t("Enemies use the wide screen"),
             );
-            ui.checkbox(&mut s.margin_sprites, "Draw sprites in the margins");
             hint(
                 ui,
-                "Show characters and items that are just off the original screen.",
+                lang.t(
+                    "Enemies can appear and move in the extra space at the sides. This changes \
+                     the game a little; online partners must pick the same.",
+                ),
+            );
+            ui.checkbox(
+                &mut s.margin_sprites,
+                lang.t("Draw sprites in the margins"),
+            );
+            hint(
+                ui,
+                lang.t("Show characters and items that are just off the original screen."),
             );
         }
         hint(
             ui,
-            "F11 or Alt+Enter switches fullscreen while playing. The picture fills the \
-             screen height; whole-number scaling is a little sharper but can leave black \
-             borders. On a 16:10 screen (Steam Deck, Legion Go, many laptops) pick 16:10 \
-             widescreen to fill it edge to edge.",
+            lang.t(
+                "F11 or Alt+Enter switches fullscreen while playing. The picture fills the \
+                 screen height; whole-number scaling is a little sharper but can leave black \
+                 borders. On a 16:10 screen (Steam Deck, Legion Go, many laptops) pick 16:10 \
+                 widescreen to fill it edge to edge.",
+            ),
         );
     });
 }
 
 fn hd_section(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<Action>) {
-    section(ui, "HD graphics pack (optional)", |ui| {
+    let lang = state.settings.language;
+    section(ui, lang.t("HD graphics pack (optional)"), |ui| {
         let current = state.settings.hd_pack.trim().to_string();
         let selected = if state.hd_custom {
-            "Custom folder…".to_string()
+            lang.t("Custom folder…").to_string()
         } else if current.is_empty() {
-            "None".to_string()
+            lang.t("None").to_string()
         } else {
             state
                 .packs
                 .iter()
                 .find(|p| p.path.as_path() == Path::new(&current))
                 .map(|p| p.name.clone())
-                .unwrap_or_else(|| "Custom folder…".to_string())
+                .unwrap_or_else(|| lang.t("Custom folder…").to_string())
         };
         ui.horizontal(|ui| {
-            ui.label("Pack");
+            ui.label(lang.t("Pack"));
             egui::ComboBox::from_id_salt("hd-pack")
                 .selected_text(selected)
                 .width(260.0)
                 .show_ui(ui, |ui| {
                     if ui
-                        .selectable_label(!state.hd_custom && current.is_empty(), "None")
+                        .selectable_label(!state.hd_custom && current.is_empty(), lang.t("None"))
                         .clicked()
                     {
                         state.hd_custom = false;
@@ -554,7 +596,7 @@ fn hd_section(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<
                         }
                     }
                     if ui
-                        .selectable_label(state.hd_custom, "Custom folder…")
+                        .selectable_label(state.hd_custom, lang.t("Custom folder…"))
                         .clicked()
                     {
                         state.hd_custom = true;
@@ -565,10 +607,10 @@ fn hd_section(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<
             ui.horizontal(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut state.settings.hd_pack)
-                        .hint_text("Folder that contains pack.json")
+                        .hint_text(lang.t("Folder that contains pack.json"))
                         .desired_width(ui.available_width() - 96.0),
                 );
-                if ui.button("Browse…").clicked() {
+                if ui.button(lang.t("Browse…")).clicked() {
                     *action = Some(Action::BrowseHdPack);
                 }
             });
@@ -585,7 +627,7 @@ fn hd_section(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<
         }
         if !state.settings.hd_pack.trim().is_empty() {
             ui.horizontal(|ui| {
-                ui.label("HD scale");
+                ui.label(lang.t("HD scale"));
                 ui.add(egui::Slider::new(
                     &mut state.settings.hd_scale,
                     1..=MAX_HD_SCALE,
@@ -593,39 +635,53 @@ fn hd_section(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<
             });
             hint(
                 ui,
-                "Use the scale the pack was drawn at (often 4). A scale the pack does not \
-                 support falls back to the pack's own.",
+                lang.t(
+                    "Use the scale the pack was drawn at (often 4). A scale the pack does not \
+                     support falls back to the pack's own.",
+                ),
             );
         }
         hint(
             ui,
-            &format!(
+            &lang_fmt(
+                lang,
                 "Redrawn graphics. Unzip a pack into {} and press Refresh to list it \
                  here, or choose Custom folder… to use one from anywhere.",
-                state.data_dir.join("packs").display()
+                &state.data_dir.join("packs").display().to_string(),
             ),
         );
         ui.horizontal(|ui| {
-            if ui.button("Open packs folder").clicked() {
+            if ui.button(lang.t("Open packs folder")).clicked() {
                 *action = Some(Action::OpenPacksFolder);
             }
-            if ui.button("Refresh").clicked() {
+            if ui.button(lang.t("Refresh")).clicked() {
                 *action = Some(Action::RescanPacks);
             }
         });
     });
 }
 
+/// A translated string with one `{}` placeholder filled in.
+///
+/// The tables hold `&'static str`, so a message that names a runtime path
+/// cannot be stored verbatim. This formats the translation on demand; the
+/// English key doubles as the format string, which keeps the two languages in
+/// step because the placeholder has to be present in both.
+fn lang_fmt(lang: crate::i18n::Lang, key: &str, arg: &str) -> String {
+    lang.t(key).replace("{}", arg)
+}
+
 fn players_section(ui: &mut egui::Ui, s: &mut Settings) {
-    section(ui, "Players", |ui| {
-        ui.radio_value(&mut s.multiplayer, Multiplayer::Single, "Single player");
+    let lang = s.language;
+    section(ui, lang.t("Players"), |ui| {
+        ui.radio_value(&mut s.multiplayer, Multiplayer::Single, lang.t("Single player"));
         ui.radio_value(
             &mut s.multiplayer,
             Multiplayer::Local,
-            "Local co-op (same computer)",
+            lang.t("Local co-op (same computer)"),
         );
-        ui.radio_value(&mut s.multiplayer, Multiplayer::Host, "Host online");
-        ui.radio_value(&mut s.multiplayer, Multiplayer::Join, "Join online");
+        ui.radio_value(&mut s.multiplayer, Multiplayer::Host, lang.t("Host online"));
+        ui.radio_value(&mut s.multiplayer, Multiplayer::Join, lang.t("Join online"));
 
         match s.multiplayer {
             Multiplayer::Single => {}
@@ -633,15 +689,17 @@ fn players_section(ui: &mut egui::Ui, s: &mut Settings) {
                 ui.add_space(4.0);
                 let mut pin = s.p2_pad.is_some();
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut pin, "Player 2 uses gamepad number");
+                    ui.checkbox(&mut pin, lang.t("Player 2 uses gamepad number"));
                     let mut n = s.p2_pad.unwrap_or(1);
                     ui.add_enabled(pin, egui::DragValue::new(&mut n).range(0..=15));
                     s.p2_pad = pin.then_some(n);
                 });
                 hint(
                     ui,
-                    "Gamepads count from 0 in the order they were connected. Leave this off \
-                     to let player 2 use the second gamepad, or the keyboard (W/A/S/D).",
+                    lang.t(
+                        "Gamepads count from 0 in the order they were connected. Leave this off \
+                         to let player 2 use the second gamepad, or the keyboard (W/A/S/D).",
+                    ),
                 );
             }
             Multiplayer::Host | Multiplayer::Join => online_fields(ui, s),
@@ -650,20 +708,21 @@ fn players_section(ui: &mut egui::Ui, s: &mut Settings) {
 }
 
 fn online_fields(ui: &mut egui::Ui, s: &mut Settings) {
+    let lang = s.language;
     ui.add_space(4.0);
     egui::Grid::new("online-grid")
         .num_columns(2)
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
-            ui.label("Room name");
+            ui.label(lang.t("Room name"));
             ui.add(
                 egui::TextEdit::singleline(&mut s.room)
-                    .hint_text("e.g. link-and-zelda")
+                    .hint_text(lang.t("e.g. link-and-zelda"))
                     .desired_width(240.0),
             );
             ui.end_row();
 
-            ui.label("Server");
+            ui.label(lang.t("Server"));
             ui.add(
                 egui::TextEdit::singleline(&mut s.signal_url)
                     .hint_text(DEFAULT_SIGNAL_URL)
@@ -673,36 +732,40 @@ fn online_fields(ui: &mut egui::Ui, s: &mut Settings) {
         });
     hint(
         ui,
-        "Both players pick the same room name and use the same ROM, with matching \
-         widescreen, \"Enemies use the wide screen\" and gameplay enhancement settings. \
-         The host is player 1.",
+        lang.t(
+            "Both players pick the same room name and use the same ROM, with matching \
+             widescreen, \"Enemies use the wide screen\" and gameplay enhancement settings. \
+             The host is player 1.",
+        ),
     );
-    egui::CollapsingHeader::new("Advanced online settings")
+    egui::CollapsingHeader::new(lang.t("Advanced online settings"))
         .id_salt("online-advanced")
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Sync");
-                ui.radio_value(&mut s.net_mode, NetMode::Rollback, "Rollback");
-                ui.radio_value(&mut s.net_mode, NetMode::Lockstep, "Lockstep");
+                ui.label(lang.t("Sync"));
+                ui.radio_value(&mut s.net_mode, NetMode::Rollback, lang.t("Rollback"));
+                ui.radio_value(&mut s.net_mode, NetMode::Lockstep, lang.t("Lockstep"));
             });
             let max = s.net_mode.max_delay();
             s.net_delay = s.net_delay.min(max);
             ui.horizontal(|ui| {
-                ui.label("Input delay (frames)");
+                ui.label(lang.t("Input delay (frames)"));
                 ui.add(egui::Slider::new(&mut s.net_delay, 0..=max));
             });
             hint(
                 ui,
-                "Rollback feels instant and fixes up the other player's moves (delay 0-3). \
-                 Lockstep waits for both players every frame (delay 0-8).",
+                lang.t(
+                    "Rollback feels instant and fixes up the other player's moves (delay 0-3). \
+                     Lockstep waits for both players every frame (delay 0-8).",
+                ),
             );
-            if ui.button("Use the public server").clicked() {
+            if ui.button(lang.t("Use the public server")).clicked() {
                 s.signal_url = DEFAULT_SIGNAL_URL.to_string();
             }
-            ui.label("ICE servers (optional)");
+            ui.label(lang.t("ICE servers (optional)"));
             ui.add(
                 egui::TextEdit::singleline(&mut s.ice)
-                    .hint_text("blank = default; 'none' = same network only")
+                    .hint_text(lang.t("blank = default; 'none' = same network only"))
                     .desired_width(f32::INFINITY),
             );
         });
@@ -716,12 +779,13 @@ fn command_line(state: &LauncherState) -> String {
 }
 
 fn command_section(ui: &mut egui::Ui, state: &LauncherState) {
-    egui::CollapsingHeader::new("Command line")
+    let lang = state.settings.language;
+    egui::CollapsingHeader::new(lang.t("Command line"))
         .id_salt("command")
         .show(ui, |ui| {
             hint(
                 ui,
-                "The exact command the Play button runs. Copy it into a script or shortcut.",
+                lang.t("The exact command the Play button runs. Copy it into a script or shortcut."),
             );
             let cmd = command_line(state);
             ui.add(
@@ -730,14 +794,15 @@ fn command_section(ui: &mut egui::Ui, state: &LauncherState) {
                     .desired_rows(2)
                     .desired_width(f32::INFINITY),
             );
-            if ui.button("Copy").clicked() {
+            if ui.button(lang.t("Copy")).clicked() {
                 ui.ctx().copy_text(command_line(state));
             }
         });
 }
 
 fn controls_section(ui: &mut egui::Ui, state: &LauncherState, action: &mut Option<Action>) {
-    egui::CollapsingHeader::new("Controls")
+    let lang = state.settings.language;
+    egui::CollapsingHeader::new(lang.t("Controls"))
         .id_salt("controls")
         .show(ui, |ui| {
             egui::Grid::new("controls-grid")
@@ -746,78 +811,77 @@ fn controls_section(ui: &mut egui::Ui, state: &LauncherState, action: &mut Optio
                 .striped(true)
                 .show(ui, |ui| {
                     let rows: &[(&str, &str)] = &[
-                        (
-                            "Player 1",
-                            "Arrows move, Z = A, X = B, Enter = Start, Right Shift = Select",
-                        ),
-                        (
-                            "Player 2",
-                            "W/A/S/D move, G = A, F = B, T = Start, R = Select (local co-op)",
-                        ),
-                        ("Gamepads", "Work automatically; the second one is player 2"),
-                        ("Tab", "Fast-forward (hold)"),
-                        ("F5 / F7", "Save / load state"),
-                        ("F6 or 1-9, 0", "Choose save slot (shown in the title bar)"),
-                        ("P", "Pause (. steps one frame while paused)"),
-                        ("F11 / Alt+Enter", "Toggle fullscreen"),
-                        ("Esc", "Quit"),
+                        ("Player 1", lang.t("Arrows move, Z = A, X = B, Enter = Start, Right Shift = Select")),
+                        ("Player 2", lang.t("W/A/S/D move, G = A, F = B, T = Start, R = Select (local co-op)")),
+                        ("Gamepads", lang.t("Work automatically; the second one is player 2")),
+                        ("Tab", lang.t("Fast-forward (hold)")),
+                        ("F5 / F7", lang.t("Save / load state")),
+                        ("F6 or 1-9, 0", lang.t("Choose save slot (shown in the title bar)")),
+                        ("P", lang.t("Pause (. steps one frame while paused)")),
+                        ("F11 / Alt+Enter", lang.t("Toggle fullscreen")),
+                        ("Esc", lang.t("Quit")),
                     ];
                     for (k, v) in rows {
-                        ui.label(RichText::new(*k).strong());
-                        ui.label(*v);
+                        ui.label(RichText::new(lang.t(k)).strong());
+                        ui.label(lang.t(v));
                         ui.end_row();
                     }
                 });
             hint(
                 ui,
-                "Saving, loading, pause and fast-forward are off during online play. \
-                 You can also drop a .nes file onto the game window.",
+                lang.t(
+                    "Saving, loading, pause and fast-forward are off during online play. \
+                     You can also drop a .nes file onto the game window.",
+                ),
             );
             ui.add_space(4.0);
             let cfg = state.data_dir.join(GAME_CONFIG_FILE_NAME);
-            ui.label(format!(
+            ui.label(lang_fmt(
+                lang,
                 "Change keys and other options in the game's settings file:\n{}",
-                cfg.display()
+                &cfg.display().to_string(),
             ));
-            if ui.button("Open data folder").clicked() {
+            if ui.button(lang.t("Open data folder")).clicked() {
                 *action = Some(Action::OpenDataFolder);
             }
         });
 }
 
 fn advanced_section(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<Action>) {
-    egui::CollapsingHeader::new("Advanced")
+    let lang = state.settings.language;
+    egui::CollapsingHeader::new(lang.t("Advanced"))
         .id_salt("advanced")
         .show(ui, |ui| {
-            ui.label("Game program");
+            ui.label(lang.t("Game program"));
             ui.horizontal(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut state.settings.game_bin_override)
-                        .hint_text("blank = find it next to the launcher")
+                        .hint_text(lang.t("blank = find it next to the launcher"))
                         .desired_width(ui.available_width() - 96.0),
                 );
-                if ui.button("Browse…").clicked() {
+                if ui.button(lang.t("Browse…")).clicked() {
                     *action = Some(Action::BrowseGameBinary);
                 }
             });
             match game::resolve_game_binary_here(&state.settings.game_bin_override) {
-                Ok(p) => hint(ui, &format!("Using: {}", p.display())),
+                Ok(p) => hint(ui, &lang_fmt(lang, "Using: {}", &p.display().to_string())),
                 Err(e) => {
                     ui.label(RichText::new(e).color(ui.visuals().warn_fg_color));
                 }
             }
             hint(
                 ui,
-                &format!(
+                &lang_fmt(
+                    lang,
                     "Game output is saved to {}",
-                    state.data_dir.join(game::GAME_LOG_FILE_NAME).display()
+                    &state.data_dir.join(game::GAME_LOG_FILE_NAME).display().to_string(),
                 ),
             );
         });
 }
 
 fn play_bar(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<Action>) {
-    let problems = validate(&state.settings);
+    let problems = validate_lang(&state.settings, state.settings.language);
     let error_color = ui.visuals().error_fg_color;
 
     if let Some(err) = &state.error {
@@ -865,10 +929,15 @@ fn play_bar(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<Ac
         }
     }
 
+    let lang = state.settings.language;
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         let running = state.game_running();
-        let label = if running { "Game running…" } else { "Play" };
+        let label = if running {
+            lang.t("Game running…")
+        } else {
+            lang.t("Play!")
+        };
         let play = ui.add_enabled(
             !running && problems.is_empty(),
             egui::Button::new(RichText::new(label).size(22.0).strong())
@@ -889,10 +958,10 @@ fn play_bar(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<Ac
         ui.vertical(|ui| {
             ui.checkbox(
                 &mut state.settings.close_on_start,
-                "Close launcher when the game starts",
+                lang.t("Close launcher when the game starts"),
             );
             if running {
-                hint(ui, "Close the game window to come back here.");
+                hint(ui, lang.t("Close the game window to come back here."));
             }
         });
     });

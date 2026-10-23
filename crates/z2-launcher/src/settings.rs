@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::i18n::Lang;
 use serde::{Deserialize, Serialize};
 pub use z2_core::enh::{DisplayEnh, Enhancements};
 
@@ -241,6 +242,9 @@ pub struct Settings {
     /// Display-only enhancements. Sent as `--display-enh-json` only when
     /// something differs from the default.
     pub display_enh: DisplayEnh,
+    /// Interface language. Defaults to Chinese for this build: the launcher is
+    /// shipped with the translated ROM, so the common case is a Chinese reader.
+    pub language: Lang,
 }
 
 impl Default for Settings {
@@ -267,6 +271,7 @@ impl Default for Settings {
             rando: RandoSettings::default(),
             enhancements: Enhancements::default(),
             display_enh: DisplayEnh::default(),
+            language: Lang::Zh,
         }
     }
 }
@@ -399,32 +404,41 @@ pub fn random_seed() -> String {
 }
 
 /// Problems with the randomizer settings (empty = fine or randomizer off).
+///
+/// English; the launcher uses [`validate_rando_lang`].
 pub fn validate_rando(r: &RandoSettings) -> Vec<String> {
+    validate_rando_lang(r, Lang::En)
+}
+
+/// [`validate_rando`] with the messages translated into `lang`.
+pub fn validate_rando_lang(r: &RandoSettings, lang: Lang) -> Vec<String> {
     let mut out = Vec::new();
     if !r.enabled {
         return out;
     }
     if r.seed.trim().is_empty() {
-        out.push("Type a seed for the randomizer, or press Random seed.".to_string());
+        out.push(lang.t("Type a seed for the randomizer, or press Random seed.").to_string());
     }
     let text = r.flags.to_flag_string();
     match z2_rando::flags::Flags::from_flag_string(&text) {
         Ok(back) if back == r.flags => {}
-        Ok(_) | Err(_) => out.push(format!(
-            "The randomizer options do not make a valid flag string ({text})."
+        Ok(_) | Err(_) => out.push(say1(
+            lang,
+            "The randomizer options do not make a valid flag string ({}).",
+            &text,
         )),
     }
     let mut normalized = r.flags.clone();
     normalized.normalize();
     if normalized != r.flags {
         out.push(
-            "A randomizer minimum is above its maximum (starting hearts, magic or palaces)."
+            lang.t("A randomizer minimum is above its maximum (starting hearts, magic or palaces).")
                 .to_string(),
         );
     }
     let sprite = r.sprite_ips.trim();
     if !sprite.is_empty() && !Path::new(sprite).is_file() {
-        out.push(format!("The sprite patch was not found: {sprite}"));
+        out.push(say1(lang, "The sprite patch was not found: {}", &sprite));
     }
     let spoiler = r.spoiler_path.trim();
     if !spoiler.is_empty() {
@@ -432,7 +446,7 @@ pub fn validate_rando(r: &RandoSettings) -> Vec<String> {
             .parent()
             .filter(|p| !p.as_os_str().is_empty());
         if parent.is_some_and(|p| !p.is_dir()) {
-            out.push(format!("The spoiler folder does not exist: {spoiler}"));
+            out.push(say1(lang, "The spoiler folder does not exist: {}", &spoiler));
         }
     }
     out
@@ -482,80 +496,119 @@ pub fn signal_url_valid(url: &str) -> bool {
     !rest.is_empty() && !rest.contains(['/', '?', '#', ' '])
 }
 
+/// Translate `key`, filling its first `{}` with `a` and its second with `b`.
+///
+/// The tables hold `&'static str`, so a message naming runtime values is
+/// formatted here. The English key doubles as the format string, which keeps
+/// the two languages in step because both must carry the same placeholders.
+fn say2(lang: Lang, key: &str, a: &dyn std::fmt::Display, b: &dyn std::fmt::Display) -> String {
+    lang.t(key)
+        .replacen("{}", &a.to_string(), 1)
+        .replace("{}", &b.to_string())
+}
+
+/// Translate `key`, filling its single `{}` with `a`.
+fn say1(lang: Lang, key: &str, a: &dyn std::fmt::Display) -> String {
+    lang.t(key).replace("{}", &a.to_string())
+}
+
 /// Human-readable problems that would stop the game from starting.
 /// Empty means the settings are good to go.
+///
+/// English, for callers that have no interface language (tests, scripts).
+/// The launcher passes its own through [`validate_lang`].
 pub fn validate(s: &Settings) -> Vec<String> {
+    validate_lang(s, Lang::En)
+}
+
+/// [`validate`] with the messages translated into `lang`.
+///
+/// The English strings double as the i18n keys, so a missing translation shows
+/// the English text rather than a blank line — the same fallback
+/// [`crate::i18n::Lang::t`] uses everywhere else.
+pub fn validate_lang(s: &Settings, lang: Lang) -> Vec<String> {
     let mut out = Vec::new();
 
     let rom = s.rom_path.trim();
     if rom.is_empty() {
-        out.push("Choose your Zelda II ROM file (a .nes file) to play.".to_string());
+        out.push(lang.t("Choose your Zelda II ROM file (a .nes file) to play.").to_string());
     } else {
         let p = Path::new(rom);
         if !p.is_file() {
-            out.push(format!("The ROM file was not found: {rom}"));
+            out.push(say1(lang, "The ROM file was not found: {}", &rom));
         } else {
             match file_starts_with_ines(p) {
                 Ok(true) => {}
-                Ok(false) => out.push(format!(
+                Ok(false) => out.push(say1(
+                    lang,
                     "That file does not look like a NES ROM (.nes). Pick your Zelda II (USA) \
-                     .nes file: {rom}"
+                     .nes file: {}",
+                    &rom,
                 )),
-                Err(e) => out.push(format!("The ROM file could not be read ({e}): {rom}")),
+                Err(e) => out.push(say2(
+                    lang,
+                    "The ROM file could not be read ({}): {}",
+                    &e,
+                    &rom,
+                )),
             }
         }
     }
 
     if !(1..=MAX_SCALE).contains(&s.scale) {
-        out.push(format!("Window size must be 1x to {MAX_SCALE}x."));
+        out.push(say1(lang, "Window size must be 1x to {}x.", &MAX_SCALE));
     }
 
     let pack = s.hd_pack.trim();
     if !pack.is_empty() {
         let dir = Path::new(pack);
         if !dir.is_dir() {
-            out.push(format!("The HD pack folder was not found: {pack}"));
+            out.push(say1(lang, "The HD pack folder was not found: {}", &pack));
         } else if !dir.join("pack.json").is_file() {
-            out.push(format!(
-                "That folder is not an HD pack (it has no pack.json inside): {pack}"
+            out.push(say1(
+                lang,
+                "That folder is not an HD pack (it has no pack.json inside): {}",
+                &pack,
             ));
         }
         if !(1..=MAX_HD_SCALE).contains(&s.hd_scale) {
-            out.push(format!("HD scale must be 1 to {MAX_HD_SCALE}."));
+            out.push(say1(lang, "HD scale must be 1 to {}.", &MAX_HD_SCALE));
         }
     }
 
     if s.multiplayer.is_online() {
         let room = s.room.trim();
         if room.is_empty() {
-            out.push("Type a room name for online play.".to_string());
+            out.push(lang.t("Type a room name for online play.").to_string());
         } else if room.chars().any(char::is_whitespace) {
-            out.push("The room name cannot contain spaces.".to_string());
+            out.push(lang.t("The room name cannot contain spaces.").to_string());
         } else if !room_name_valid(room) {
-            out.push(format!(
-                "The room name can only use letters, numbers, - and _ (up to {MAX_ROOM_LEN} \
-                 characters)."
+            out.push(say1(
+                lang,
+                "The room name can only use letters, numbers, - and _ (up to {} characters).",
+                &MAX_ROOM_LEN,
             ));
         }
         let url = s.signal_url.trim();
         if !(url.starts_with("ws://") || url.starts_with("wss://")) {
-            out.push("The server address must start with ws:// or wss://.".to_string());
+            out.push(lang.t("The server address must start with ws:// or wss://.").to_string());
         } else if !signal_url_valid(url) {
             out.push(
-                "The server address should look like wss://host or wss://host:port \
-                 (no path)."
+                lang.t("The server address should look like wss://host or wss://host:port (no path).")
                     .to_string(),
             );
         }
         let max = s.net_mode.max_delay();
         if s.net_delay > max {
-            out.push(format!(
-                "Input delay must be 0 to {max} for {} mode.",
-                s.net_mode.flag_value()
+            out.push(say2(
+                lang,
+                "Input delay must be 0 to {} for {} mode.",
+                &max,
+                &s.net_mode.flag_value(),
             ));
         }
     }
-    out.extend(validate_rando(&s.rando));
+    out.extend(validate_rando_lang(&s.rando, lang));
     out
 }
 
