@@ -1046,10 +1046,13 @@ fn register_native_traps(game: &mut Game) {
 fn register_translated_traps(game: &mut Game) {
     // `bank7_traps` byte-checks its MMC1 serial switchers and skips them.
     z2_core::bank7_traps::register_bank7_traps(game);
+    z2_core::sideview_traps::register_sideview_traps(game);
+    z2_core::sideview_traps::register_overworld_traps(game);
     z2_core::player_traps::register_player_traps(game);
     z2_core::enemy_traps::register_enemy_traps(game);
     z2_core::town_traps::register_town_traps(game);
     z2_core::palace_traps::register_palace_traps(game);
+    z2_core::title_traps::register_title_traps(game);
     z2_core::boot_traps::register_boot_traps(game);
 }
 

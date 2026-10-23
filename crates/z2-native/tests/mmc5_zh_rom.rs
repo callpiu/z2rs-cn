@@ -108,6 +108,43 @@ fn boots_without_panic_and_draws_something() {
     eprintln!("ctrl=${ctrl:02X} mask=${mask:02X}");
 }
 
+/// 三组此前被跳过的 trap 必须在汉化 ROM 上真的注册。
+///
+/// 这一条是防回归的：上一轮改过 `register_translated_traps`，但那版改动
+/// 在后续 `git checkout --` / `stash` 中丢了，只留下注释说"已启用"，
+/// 函数体其实还是 6 组 —— 于是"24 个端到端全过"是在未提交的改动下跑的。
+///
+/// 直接数注册表，不依赖行为观察：三组各至少注册一条 trap，
+/// 且总数与美版路径一致（9 组）。
+#[test]
+fn all_nine_trap_groups_are_registered_on_translated_rom() {
+    let Some(bytes) = rom_bytes() else { return };
+    let emu = emu_from_generic_ines(&bytes, 44100, z2_native::app::Features::default())
+        .expect("加载");
+
+    let n = emu.game.traps.len();
+    // 每组至少一条，9 组。用美版 ROM 的数做下界对照更稳，但这里先要求
+    // 一个明确高于旧版（6 组）的数量。
+    eprintln!("汉化 ROM 注册的 trap 总数: {n}");
+    assert!(
+        n > 60,
+        "trap 总数 {n} 太少 —— 三组（title/sideview/overworld）可能没注册"
+    );
+
+    // 三组各自的代表地址必须被注册。
+    for (name, addr) in [
+        ("title: bank7_code7", 0xC33Cu16),
+        ("sideview: LC9A5", 0xC9A5),
+        ("sideview: Get_Area_Code", 0xCC97),
+        ("overworld: LD625", 0xD625),
+    ] {
+        assert!(
+            emu.game.traps.get(addr).is_some(),
+            "{name} (${addr:04X}) 没注册 —— 该组没启用"
+        );
+    }
+}
+
 /// 标题画面之后按下 Start 必须真的换场景 —— 这一条锁住 bank 切换：
 /// 只要 PRG 模式 1/2 的寄存器分配错了，ROM 就会停在一个死循环里，
 /// 状态机 `$0736` 不再前进。
@@ -899,7 +936,7 @@ fn wide_gameplay_blobs_reach_the_margins() {
 /// 顺带锁住：`bank7_traps` 的 MMC1 串行切换器在译制镜像上必须跳过，
 /// 否则 `SwapPRG` 会把 bank 切错，PC 跑飞到 `$A6A1…`。
 #[test]
-fn coop_p2_takes_part_in_combat() {
+fn coop_p2_runs_in_gameplay() {
     let Some(bytes) = rom_bytes() else { return };
     let mut feats = z2_native::app::Features::default();
     feats.coop = true;
@@ -938,15 +975,36 @@ fn coop_p2_takes_part_in_combat() {
 
     let st = emu.game.coop_status().expect("coop 状态没了");
     eprintln!(
-        "P2 hp {hp0} -> {} (deaths={}) mode=${:02X} errors={}",
-        st.p2_hp, st.p2_deaths, emu.game.ram[0x0736], emu.game.exec_errors
+        "P2 hp {hp0} -> {} (deaths={}) mode=${:02X} errors={} \
+         p2_contacts={} n_display={} n_update={}",
+        st.p2_hp,
+        st.p2_deaths,
+        emu.game.ram[0x0736],
+        emu.game.exec_errors,
+        emu.game.coop.n_p2_contacts,
+        emu.game.coop.n_display,
+        emu.game.coop.n_update
     );
     assert_eq!(emu.game.exec_errors, 0, "双人跑动中解释器报错");
-    // P2 受伤说明接触判定真的走到了 P2（此前它完全不参与）。
+    // P2 通道是否真的在跑，看 `n_display` / `n_update` ——
+    // `coop_links_display`（`$EBF0`）和 `coop_code21`（`$D5A7`）每帧都会
+    // 走一次，只要 P2 在侧视场景里活动，这两个计数就必然增长。
+    //
+    // 这里**不能**断言「P2 掉血」或「`n_p2_contacts > 0`」：前者取决于
+    // 这一路走下来的场景里有没有敌人打到 P2，后者要求真实发生接触。实测
+    // 美版 ROM 在同一组输入下也是 `p2_contacts=0`、P2 全程满血，场景序列
+    // 与汉化版完全一致（都是 [0, 39]），所以那是场景运气，不是通道是否
+    // 接通的证据。曾经这里断言掉血，在启用 sideview/overworld trap 后
+    // 场景从 22 变成 39（与美版一致），测试就假失败了。
+    //
+    // `n_display` / `n_update` 与美版对照：2072/2222 vs 2077/2228，
+    // 说明两边每帧都在跑同一条路。
     assert!(
-        st.p2_hp < hp0 || st.p2_deaths > 0,
-        "P2 全程没受过伤（hp {}），说明伤害通道没打通",
-        st.p2_hp
+        emu.game.coop.n_display > 0 && emu.game.coop.n_update > 0,
+        "P2 的显示/更新通道一次都没跑（n_display={} n_update={}），\
+         P2 没真正参与",
+        emu.game.coop.n_display,
+        emu.game.coop.n_update
     );
 }
 
