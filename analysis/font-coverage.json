@@ -1,0 +1,30 @@
+{
+  "font": "C:\\Windows\\Fonts\\msyh.ttc",
+  "face_index": 0,
+  "cmap_formats": [
+    4,
+    12
+  ],
+  "unicode_cmap_subtables": [
+    {
+      "platform_id": 0,
+      "encoding_id": 3,
+      "format": 4
+    },
+    {
+      "platform_id": 3,
+      "encoding_id": 1,
+      "format": 4
+    },
+    {
+      "platform_id": 3,
+      "encoding_id": 10,
+      "format": 12
+    }
+  ],
+  "required_unique": 950,
+  "covered_unique": 950,
+  "missing_count": 0,
+  "missing": [],
+  "coverage_ok": true
+}

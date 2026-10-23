@@ -50,7 +50,17 @@ impl Lang {
         table
             .iter()
             .find(|(k, _)| *k == key)
-            .map_or(key, |(_, v)| *v)
+            .map(|(_, v)| *v)
+            .or_else(|| if self == Lang::Zh {
+                crate::rando_ui::i18n::ZH.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+            } else { None })
+            .unwrap_or(key)
+    }
+}
+
+impl From<Lang> for z2_enh_ui::Lang {
+    fn from(lang: Lang) -> Self {
+        match lang { Lang::En => Self::En, Lang::Zh => Self::Zh }
     }
 }
 

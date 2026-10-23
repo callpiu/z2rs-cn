@@ -1,0 +1,37 @@
+{
+  "contexts": [
+    {
+      "name": "launcher enhancements",
+      "binding": "app::apply_style -> font::install; egui Proportional/Monospace fallback",
+      "font_file": "C:/Windows/Fonts/msyh.ttc",
+      "face_index": 0,
+      "coverage_ok": true,
+      "render_test": "all 11 groups, conditional controls, English/Chinese",
+      "layout_visually_checked": false
+    },
+    {
+      "name": "launcher randomizer",
+      "binding": "same launcher context; explicit Lang on all 12 groups",
+      "font_file": "C:/Windows/Fonts/msyh.ttc",
+      "face_index": 0,
+      "coverage_ok": true,
+      "render_test": "all 12 groups, every preset, full header; idle flags unchanged",
+      "layout_visually_checked": false
+    },
+    {
+      "name": "ROM save menu",
+      "binding": "MMC5 CHR glyph banks from unchanged user ROM",
+      "coverage": "not a system-font context",
+      "runtime_loaded": true,
+      "layout_visually_checked": true,
+      "evidence": [
+        "验证报告/release-rom-menu.png"
+      ]
+    },
+    {
+      "name": "game O-key overlay",
+      "scope": "existing English UI; only updated calls to shared enhancement API with Lang::En",
+      "validation": "native overlay unit tests pass; not localized in this update"
+    }
+  ]
+}

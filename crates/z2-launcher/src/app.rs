@@ -87,9 +87,9 @@ impl LauncherApp {
             }
             Action::BrowseSpriteIps => {
                 let mut dlg = rfd::FileDialog::new()
-                    .set_title("Choose your sprite patch")
-                    .add_filter("IPS patch", &["ips", "IPS"])
-                    .add_filter("All files", &["*"]);
+                    .set_title(s.language.t("Choose your sprite patch"))
+                    .add_filter(s.language.t("IPS patch"), &["ips", "IPS"])
+                    .add_filter(s.language.t("All files"), &["*"]);
                 if let Some(dir) = existing_parent(&s.rando.sprite_ips) {
                     dlg = dlg.set_directory(dir);
                 }
@@ -99,8 +99,8 @@ impl LauncherApp {
             }
             Action::BrowseSpoiler => {
                 let mut dlg = rfd::FileDialog::new()
-                    .set_title("Save the spoiler log as")
-                    .add_filter("Text", &["txt"])
+                    .set_title(s.language.t("Save the spoiler log as"))
+                    .add_filter(s.language.t("Text"), &["txt"])
                     .set_file_name("z2rs-spoiler.txt");
                 if let Some(dir) = existing_parent(&s.rando.spoiler_path) {
                     dlg = dlg.set_directory(dir);

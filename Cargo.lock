@@ -7051,6 +7051,7 @@ name = "z2-enh-ui"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "serde",
  "z2-core",
 ]
 

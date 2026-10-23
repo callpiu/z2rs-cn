@@ -17,6 +17,9 @@ pub fn enhancements_section(ui: &mut egui::Ui, s: &mut Settings, force_open: boo
             force_open,
             gameplay_editable: true,
             rom_randomized: s.rando.enabled,
+            // The launcher's own language, so the shared widgets match the rest
+            // of this window.
+            lang: s.language.into(),
         },
     );
 }

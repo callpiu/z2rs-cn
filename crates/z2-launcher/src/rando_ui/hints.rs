@@ -1,15 +1,15 @@
 //! Hint options.
 
 use egui::Ui;
+use crate::i18n::Lang;
 use z2_rando::flags::HintFlags;
 
 use super::{check, choice, grid, tri};
 
 /// Widgets for [`HintFlags`].
-pub fn ui(ui: &mut Ui, f: &mut HintFlags) {
+pub fn ui(ui: &mut Ui, lang: Lang, f: &mut HintFlags) {
     grid(ui, "rando-hints", |ui| {
-        choice(
-            ui,
+        choice(ui, lang,
             "Helpful hints",
             "Four townsfolk tell you where four important items are (Old Kasuto's \
              wall always has one). By continent: they name the region only. \
@@ -17,36 +17,31 @@ pub fn ui(ui: &mut Ui, f: &mut HintFlags) {
              say they know nothing.",
             &mut f.helpful_hints,
         );
-        tri(
-            ui,
+        tri(ui, lang,
             "Spell item hints",
             "The people who ask for the trophy, medicine, child, water and mirror \
              say what their town's wizard gives; the two closed stab-teacher \
              doors say what the knight inside teaches.",
             &mut f.spell_item_hints,
         );
-        tri(
-            ui,
+        tri(ui, lang,
             "Town name hints",
             "Each wizard town's sign names what its wizard gives.",
             &mut f.town_name_hints,
         );
-        check(
-            ui,
+        check(ui, lang,
             "Spoiler seed",
             "Marks the seed as a spoiler seed; this changes the generated game. \
              The spoiler log itself is chosen above.",
             &mut f.generate_spoiler,
         );
-        check(
-            ui,
+        check(ui, lang,
             "Reveal walkthrough walls",
             "False walls and floors you can walk through are drawn as plain \
              background, so they show as gaps.",
             &mut f.reveal_walkthrough_walls,
         );
-        check(
-            ui,
+        check(ui, lang,
             "Reveal hidden jars",
             "Spots you can strike for a hidden jar (or enemy) show an orange jar.",
             &mut f.reveal_hidden_jars,

@@ -1,0 +1,28 @@
+{
+  "scope": "launcher enhancement/randomizer labels, help, enum labels and format tokens",
+  "catalogue_counts": {
+    "enhancements": 205,
+    "randomizer": 529
+  },
+  "checked_literals_by_file": {
+    "crates\\z2-launcher\\src\\rando_ui\\cosmetic.rs": 33,
+    "crates\\z2-launcher\\src\\rando_ui\\drops.rs": 11,
+    "crates\\z2-launcher\\src\\rando_ui\\enemies.rs": 24,
+    "crates\\z2-launcher\\src\\rando_ui\\hints.rs": 12,
+    "crates\\z2-launcher\\src\\rando_ui\\items.rs": 26,
+    "crates\\z2-launcher\\src\\rando_ui\\mod.rs": 18,
+    "crates\\z2-launcher\\src\\rando_ui\\overworld.rs": 61,
+    "crates\\z2-launcher\\src\\rando_ui\\palaces.rs": 57,
+    "crates\\z2-launcher\\src\\rando_ui\\qol.rs": 20,
+    "crates\\z2-launcher\\src\\rando_ui\\spells.rs": 20,
+    "crates\\z2-launcher\\src\\rando_ui\\start.rs": 65,
+    "crates\\z2-launcher\\src\\rando_ui\\stats.rs": 23,
+    "crates\\z2-launcher\\src\\rando_ui\\towns.rs": 4,
+    "crates\\z2-enh-ui\\src\\lib.rs": 194
+  },
+  "enum_labels_checked": 148,
+  "missing": [],
+  "format_token_errors": [],
+  "corpus_sha256": "3b9d172f2e5ccf40575570ca36236c7b216e78182f4b4e351bffa5f331a45eec",
+  "passed": true
+}

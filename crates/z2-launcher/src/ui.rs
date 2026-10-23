@@ -83,7 +83,7 @@ pub struct LauncherState {
     /// The flag-string text box (may hold a string being typed).
     pub flag_text: String,
     /// Why [`Self::flag_text`] does not parse, if it does not.
-    pub flag_error: Option<String>,
+    pub flag_error: Option<z2_rando::flags::FlagError>,
     /// Flag string the widgets produced last frame, to notice widget edits.
     last_flags: String,
     /// Open every randomizer section the first time they are drawn (tests).
@@ -288,50 +288,63 @@ fn sync_flag_text(state: &mut LauncherState) {
     }
 }
 
+fn flag_error_message(lang: crate::i18n::Lang, error: &z2_rando::flags::FlagError) -> String {
+    use z2_rando::flags::{FlagError, FLAGS_VERSION};
+    if lang == crate::i18n::Lang::En { return error.to_string(); }
+    match error {
+        FlagError::Empty => "配置码为空".into(),
+        FlagError::Version(c) => format!("不支持配置码版本“{c}”（本版支持“{FLAGS_VERSION}”）"),
+        FlagError::BadChar(c) => format!("“{c}”不是有效的配置码字符"),
+        FlagError::BadValue { module, field, raw } => format!("选项 {module}.{field} 的值无效（{raw}）"),
+        FlagError::BadLength => "配置码格式错误（分组长度无效）".into(),
+    }
+}
+
 fn randomizer_tab(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<Action>) {
     use z2_rando::flags::{Flags, Preset};
+    let lang = state.settings.language;
     sync_flag_text(state);
-    section(ui, "ROM randomizer", |ui| {
+    section(ui, lang.t("ROM randomizer"), |ui| {
         ui.checkbox(
             &mut state.settings.rando.enabled,
-            "Play a randomized game (generated from your ROM each time you start)",
+            lang.t("Play a randomized game (generated from your ROM each time you start)"),
         );
         hint(
             ui,
-            "Rebuilds the world (map, palaces, items, enemies) from a seed. The Enhancements \
+            lang.t("Rebuilds the world (map, palaces, items, enemies) from a seed. The Enhancements \
              tab's \"Randomizer & start\" group is a lighter runtime option: its start loadout, \
              scaling and palettes apply on top of a randomized game, but its item shuffle is \
-             turned off while this is on.",
+             turned off while this is on."),
         );
         egui::Grid::new("rando-head")
             .num_columns(2)
             .spacing([12.0, 8.0])
             .show(ui, |ui| {
-                ui.label("Seed");
+                ui.label(lang.t("Seed"));
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut state.settings.rando.seed)
-                            .hint_text("any text")
+                            .hint_text(lang.t("any text"))
                             .desired_width(200.0),
                     )
-                    .on_hover_text("The same seed and options always give the same game.");
-                    if ui.button("Random seed").clicked() {
+                    .on_hover_text(lang.t("The same seed and options always give the same game."));
+                    if ui.button(lang.t("Random seed")).clicked() {
                         state.settings.rando.seed = crate::settings::random_seed();
                     }
                 });
                 ui.end_row();
 
-                ui.label("Preset");
+                ui.label(lang.t("Preset"));
                 let r = &mut state.settings.rando;
                 let current = Preset::detect(&r.flags);
                 egui::ComboBox::from_id_salt("rando-preset")
-                    .selected_text(current.map_or("Custom", Preset::label))
+                    .selected_text(lang.t(current.map_or("Custom", Preset::label)))
                     .width(220.0)
                     .show_ui(ui, |ui| {
                         for p in Preset::ALL {
                             if ui
-                                .selectable_label(current == Some(*p), p.label())
-                                .on_hover_text(p.description())
+                                .selectable_label(current == Some(*p), lang.t(p.label()))
+                                .on_hover_text(lang.t(p.description()))
                                 .clicked()
                             {
                                 r.flags = p.flags();
@@ -341,7 +354,7 @@ fn randomizer_tab(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Opt
                     });
                 ui.end_row();
 
-                ui.label("Flags");
+                ui.label(lang.t("Flags"));
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut state.flag_text)
                         .font(egui::TextStyle::Monospace)
@@ -354,38 +367,38 @@ fn randomizer_tab(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Opt
                             state.settings.rando.flags = f;
                             state.flag_error = None;
                         }
-                        Err(e) => state.flag_error = Some(e.to_string()),
+                        Err(e) => state.flag_error = Some(e),
                     }
                 }
                 ui.end_row();
             });
         if let Some(err) = &state.flag_error {
             ui.label(
-                RichText::new(format!("Flag string not applied: {err}"))
+                RichText::new(format!("{}：{}", lang.t("Flag string not applied"), flag_error_message(lang, err)))
                     .color(ui.visuals().error_fg_color),
             );
         }
-        if ui.button("Copy flag string").clicked() {
+        if ui.button(lang.t("Copy flag string")).clicked() {
             ui.ctx()
                 .copy_text(state.settings.rando.flags.to_flag_string());
         }
         hint(
             ui,
-            "Paste a flag string to load someone's options, or change the options below and share the string. Racers need the same seed, flags and z2rs version.",
+            lang.t("Paste a flag string to load someone's options, or change the options below and share the string. Racers need the same seed, flags and z2rs version."),
         );
         ui.add_space(4.0);
         egui::Grid::new("rando-files")
             .num_columns(2)
             .spacing([12.0, 8.0])
             .show(ui, |ui| {
-                ui.label("Spoiler log");
+                ui.label(lang.t("Spoiler log"));
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut state.settings.rando.spoiler_path)
-                            .hint_text("none")
+                            .hint_text(lang.t("none"))
                             .desired_width(260.0),
                     );
-                    if ui.button("Choose…").clicked() {
+                    if ui.button(lang.t("Choose…")).clicked() {
                         *action = Some(Action::BrowseSpoiler);
                     }
                 });
@@ -398,51 +411,51 @@ fn randomizer_tab(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Opt
     let f = &mut state.settings.rando.flags;
     let titles = crate::rando_ui::MODULE_TITLES;
     let header = |ui: &mut egui::Ui, i: usize, body: &mut dyn FnMut(&mut egui::Ui)| {
-        egui::CollapsingHeader::new(titles[i])
+        egui::CollapsingHeader::new(lang.t(titles[i]))
             .id_salt(("rando-module", i))
             .default_open(open)
             .show(ui, |ui| body(ui));
     };
     header(ui, 0, &mut |ui| {
-        crate::rando_ui::start::ui(ui, &mut f.start)
+        crate::rando_ui::start::ui(ui, lang, &mut f.start)
     });
     header(ui, 1, &mut |ui| {
-        crate::rando_ui::overworld::ui(ui, &mut f.overworld)
+        crate::rando_ui::overworld::ui(ui, lang, &mut f.overworld)
     });
     header(ui, 2, &mut |ui| {
-        crate::rando_ui::palaces::ui(ui, &mut f.palaces)
+        crate::rando_ui::palaces::ui(ui, lang, &mut f.palaces)
     });
     header(ui, 3, &mut |ui| {
-        crate::rando_ui::items::ui(ui, &mut f.items)
+        crate::rando_ui::items::ui(ui, lang, &mut f.items)
     });
     header(ui, 4, &mut |ui| {
-        crate::rando_ui::enemies::ui(ui, &mut f.enemies)
+        crate::rando_ui::enemies::ui(ui, lang, &mut f.enemies)
     });
     header(ui, 5, &mut |ui| {
-        crate::rando_ui::stats::ui(ui, &mut f.stats)
+        crate::rando_ui::stats::ui(ui, lang, &mut f.stats)
     });
     header(ui, 6, &mut |ui| {
-        crate::rando_ui::spells::ui(ui, &mut f.spells)
+        crate::rando_ui::spells::ui(ui, lang, &mut f.spells)
     });
     header(ui, 7, &mut |ui| {
-        crate::rando_ui::drops::ui(ui, &mut f.drops)
+        crate::rando_ui::drops::ui(ui, lang, &mut f.drops)
     });
     header(ui, 8, &mut |ui| {
-        crate::rando_ui::hints::ui(ui, &mut f.hints)
+        crate::rando_ui::hints::ui(ui, lang, &mut f.hints)
     });
     header(ui, 9, &mut |ui| {
-        crate::rando_ui::towns::ui(ui, &mut f.towns)
+        crate::rando_ui::towns::ui(ui, lang, &mut f.towns)
     });
-    header(ui, 10, &mut |ui| crate::rando_ui::qol::ui(ui, &mut f.qol));
+    header(ui, 10, &mut |ui| crate::rando_ui::qol::ui(ui, lang, &mut f.qol));
     header(ui, 11, &mut |ui| {
-        if crate::rando_ui::cosmetic::sprite_patch(ui, sprite) {
+        if crate::rando_ui::cosmetic::sprite_patch(ui, lang, sprite) {
             *action = Some(Action::BrowseSpriteIps);
         }
-        crate::rando_ui::cosmetic::ui(ui, &mut f.cosmetic)
+        crate::rando_ui::cosmetic::ui(ui, lang, &mut f.cosmetic)
     });
     hint(
         ui,
-        "A few options are kept in flag strings but have no effect yet (their tooltips say so); README.md lists what each option does.",
+        lang.t("A few options are kept in flag strings but have no effect yet (their tooltips say so); README.md lists what each option does."),
     );
 }
 
@@ -970,6 +983,54 @@ fn play_bar(ui: &mut egui::Ui, state: &mut LauncherState, action: &mut Option<Ac
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flag_errors_follow_language_without_losing_details() {
+        use z2_rando::flags::FlagError;
+        for error in [FlagError::Empty, FlagError::Version('9'), FlagError::BadChar('!'),
+            FlagError::BadValue { module: "start", field: "attack_level", raw: 99 }, FlagError::BadLength] {
+            assert_eq!(flag_error_message(crate::i18n::Lang::En, &error), error.to_string());
+            let zh = flag_error_message(crate::i18n::Lang::Zh, &error);
+            assert!(zh.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)));
+        }
+        let error = FlagError::BadValue { module: "start", field: "attack_level", raw: 99 };
+        let zh = flag_error_message(crate::i18n::Lang::Zh, &error);
+        assert!(zh.contains("start.attack_level") && zh.contains("99"));
+    }
+
+    #[test]
+    fn randomizer_header_and_groups_follow_launcher_language() {
+        let dir = std::env::temp_dir().join("z2-launcher-i18n-render");
+        for lang in crate::i18n::Lang::ALL {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let mut state = LauncherState::new(Settings { language: lang, ..Settings::default() }, dir.clone());
+            state.rando_expand = true;
+            let mut labels = Vec::new();
+            for frame in 0..3 {
+                let mut out = ctx.run_ui(egui::RawInput {
+                    time: Some(frame as f64),
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 30000.0))),
+                    ..Default::default()
+                }, |ui| randomizer_tab(ui, &mut state, &mut None));
+                if let Some(update) = out.platform_output.accesskit_update.take() {
+                    for (_, node) in update.nodes {
+                        if let Some(s) = node.label().filter(|s| !s.is_empty()) { labels.push(s.to_owned()); }
+                    }
+                }
+                out.textures_delta.clear();
+            }
+            assert!(labels.len() > 200, "incomplete render: {}", labels.len());
+            for title in crate::rando_ui::MODULE_TITLES {
+                assert!(labels.iter().any(|s| s == lang.t(title)), "missing {title}");
+            }
+            let cjk = |s: &str| s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+            if lang == crate::i18n::Lang::Zh {
+                let left: Vec<_> = labels.iter().filter(|s| !cjk(s) && s.chars().filter(|c| c.is_ascii_alphabetic()).count() > 3 && !s.starts_with('$')).collect();
+                assert!(left.is_empty(), "untranslated: {left:?}");
+            } else { assert!(!labels.iter().any(|s| cjk(s))); }
+        }
+    }
 
     /// Every section renders headless (no window) in every mode without
     /// panicking, and an idle frame asks for nothing.

@@ -328,6 +328,7 @@ pub fn options_ui(ui: &mut egui::Ui, m: &mut Model, tab: &mut Tab, force_open: b
         force_open,
         gameplay_editable: m.gameplay_editable(),
         rom_randomized: m.rom_randomized,
+        lang: z2_enh_ui::Lang::En,
     };
     egui::ScrollArea::vertical()
         .auto_shrink([false, true])
@@ -335,12 +336,13 @@ pub fn options_ui(ui: &mut egui::Ui, m: &mut Model, tab: &mut Tab, force_open: b
             match *tab {
                 Tab::Game => game_tab(ui, m, o),
                 Tab::Gameplay => {
-                    z2_enh_ui::intro(ui, &m.enhancements);
+                    z2_enh_ui::intro(ui, &m.enhancements, o.lang);
                     z2_enh_ui::preset_buttons(
                         ui,
                         &mut m.enhancements,
                         &mut m.display_enh,
                         o.gameplay_editable,
+                        o.lang,
                     );
                     hint(
                         ui,

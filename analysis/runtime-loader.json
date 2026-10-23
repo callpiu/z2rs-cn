@@ -1,0 +1,30 @@
+{
+  "date": "2026-10-23",
+  "game": "z2rs 0.6.0 Chinese launcher update",
+  "executable": "D:\\z2rs-build-060\\release\\z2-native.exe",
+  "executable_sha256": "e7bdf13cf618bcf00da2d355f342520599a30821599bd6d4d38932a7c4e76cd7",
+  "rom": "D:\\z2rs-中文版\\Zelda II - The Adventure of Link (U) [20260806_NOKOH].nes",
+  "rom_sha256": "3ad492108dd395723b73fe0aa9b3bb659f73afe191ef75c866b468a566e75d50",
+  "loader": "--rom explicitly passed to the release executable; Game::from_ines mapper 5",
+  "runtime_asset_root": "D:\\z2rs-中文版",
+  "virtual_asset_root": "iNES PRG and CHR, loaded from the explicit ROM path",
+  "title_smoke": {
+    "frames": 300,
+    "interpreter_faults": 0,
+    "screenshot": "验证报告/release-rom-title.png"
+  },
+  "chinese_menu_smoke": {
+    "frames": 800,
+    "input": "480 blank, 80 Start, 240 blank",
+    "interpreter_faults": 0,
+    "screenshot": "验证报告/release-rom-menu.png",
+    "visually_checked": true
+  },
+  "launcher": {
+    "launched": true,
+    "process_path": "D:/z2rs-build-060/release/z2-launcher.exe",
+    "desktop_capture": "failed after one retry; FrameArrived/window capture timed out",
+    "native_layout_visually_checked": false
+  },
+  "installation": "new portable directory only; prior release and user configuration not replaced"
+}

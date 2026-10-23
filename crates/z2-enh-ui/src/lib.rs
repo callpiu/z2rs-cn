@@ -17,6 +17,10 @@
 //! session's options read-only during netplay or movie playback.
 
 use egui::RichText;
+
+pub mod i18n;
+pub use i18n::Lang;
+
 use z2_core::enh::{
     abilities::MAX_SWORD_REACH_PX,
     display::MAX_VOLUME,
@@ -55,6 +59,8 @@ pub struct Opts {
     /// off ([`Enhancements::for_rom`]); the new areas stay editable with a
     /// note that areas whose spare slot the seed uses are skipped.
     pub rom_randomized: bool,
+    /// Interface language for every label and tooltip.
+    pub lang: Lang,
 }
 
 impl Default for Opts {
@@ -63,6 +69,7 @@ impl Default for Opts {
             force_open: false,
             gameplay_editable: true,
             rom_randomized: false,
+            lang: Lang::En,
         }
     }
 }
@@ -134,56 +141,63 @@ pub fn group_ui(ui: &mut egui::Ui, g: Group, e: &mut Enhancements, d: &mut Displ
     }
 }
 
-fn hint(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).weak());
+fn hint(ui: &mut egui::Ui, lang: Lang, text: &str) {
+    ui.label(RichText::new(lang.tr(text)).weak());
 }
 
-fn check(ui: &mut egui::Ui, v: &mut bool, label: &str, tip: &str) {
-    ui.checkbox(v, label).on_hover_text(tip);
+fn check(ui: &mut egui::Ui, lang: Lang, v: &mut bool, label: &str, tip: &str) {
+    ui.checkbox(v, lang.tr(label)).on_hover_text(lang.tr(tip));
 }
 
 fn slider_u8(
     ui: &mut egui::Ui,
+    lang: Lang,
     v: &mut u8,
     range: std::ops::RangeInclusive<u8>,
     label: &str,
     tip: &str,
 ) {
     ui.horizontal(|ui| {
-        ui.label(label).on_hover_text(tip);
-        ui.add(egui::Slider::new(v, range)).on_hover_text(tip);
+        ui.label(lang.tr(label)).on_hover_text(lang.tr(tip));
+        ui.add(egui::Slider::new(v, range))
+            .on_hover_text(lang.tr(tip));
     });
 }
 
-fn slider_pct(ui: &mut egui::Ui, v: &mut i8, label: &str, tip: &str) {
+fn slider_pct(ui: &mut egui::Ui, lang: Lang, v: &mut i8, label: &str, tip: &str) {
     ui.horizontal(|ui| {
-        ui.label(label).on_hover_text(tip);
+        ui.label(lang.tr(label)).on_hover_text(lang.tr(tip));
         ui.add(egui::Slider::new(v, -MAX_SCALE_PCT..=MAX_SCALE_PCT).suffix("%"))
-            .on_hover_text(tip);
+            .on_hover_text(lang.tr(tip));
     });
 }
 
 fn slider_f32(
     ui: &mut egui::Ui,
+    lang: Lang,
     v: &mut f32,
     range: std::ops::RangeInclusive<f32>,
     label: &str,
     tip: &str,
 ) {
     ui.horizontal(|ui| {
-        ui.label(label).on_hover_text(tip);
+        ui.label(lang.tr(label)).on_hover_text(lang.tr(tip));
         ui.add(egui::Slider::new(v, range).fixed_decimals(3))
-            .on_hover_text(tip);
+            .on_hover_text(lang.tr(tip));
     });
 }
 
 /// Checkboxes for the low `names.len()` bits of `mask`.
-fn bit_boxes(ui: &mut egui::Ui, mask: &mut u16, names: &[&str], tip: &str) {
+fn bit_boxes(ui: &mut egui::Ui, lang: Lang, mask: &mut u16, names: &[&str], tip: &str) {
     ui.horizontal_wrapped(|ui| {
         for (i, name) in names.iter().enumerate() {
             let bit = 1u16 << i;
             let mut on = *mask & bit != 0;
-            if ui.checkbox(&mut on, *name).on_hover_text(tip).changed() {
+            if ui
+                .checkbox(&mut on, lang.tr(name))
+                .on_hover_text(lang.tr(tip))
+                .changed()
+            {
                 if on {
                     *mask |= bit;
                 } else {
@@ -198,13 +212,14 @@ fn bit_boxes(ui: &mut egui::Ui, mask: &mut u16, names: &[&str], tip: &str) {
 /// `editable` is false.
 fn group(
     ui: &mut egui::Ui,
+    lang: Lang,
     title: &str,
     salt: &str,
     force_open: bool,
     editable: bool,
     body: impl FnOnce(&mut egui::Ui),
 ) {
-    egui::CollapsingHeader::new(title)
+    egui::CollapsingHeader::new(lang.tr(title))
         .id_salt(salt)
         .open(force_open.then_some(true))
         .show(ui, |ui| {
@@ -213,9 +228,10 @@ fn group(
 }
 
 /// The intro text and status line of the section.
-pub fn intro(ui: &mut egui::Ui, e: &Enhancements) {
+pub fn intro(ui: &mut egui::Ui, e: &Enhancements, lang: Lang) {
     hint(
         ui,
+        lang,
         "Optional changes inspired by ZALiA, HoverBat's Zelda II remake. Everything is off \
          by default, which is the original game. Gameplay options change the game: online \
          partners must pick exactly the same, and movie playback ignores them. Hover an \
@@ -226,7 +242,7 @@ pub fn intro(ui: &mut egui::Ui, e: &Enhancements) {
     } else {
         "Gameplay: original game."
     };
-    hint(ui, status);
+    hint(ui, lang, status);
 }
 
 /// "Reset to original" and "ZALiA preset". With `gameplay_editable` false
@@ -236,11 +252,12 @@ pub fn preset_buttons(
     e: &mut Enhancements,
     d: &mut DisplayEnh,
     gameplay_editable: bool,
+    lang: Lang,
 ) {
     ui.horizontal(|ui| {
         if ui
-            .button("Reset to original")
-            .on_hover_text("Turn every enhancement off (the original NES game).")
+            .button(lang.tr("Reset to original"))
+            .on_hover_text(lang.tr("Turn every enhancement off (the original NES game)."))
             .clicked()
         {
             if gameplay_editable {
@@ -249,13 +266,13 @@ pub fn preset_buttons(
             *d = DisplayEnh::default();
         }
         if ui
-            .button("ZALiA preset")
-            .on_hover_text(
+            .button(lang.tr("ZALiA preset"))
+            .on_hover_text(lang.tr(
                 "ZALiA's own defaults: dialogue speed 2, continue from the palace entrance \
                  or last town, keep 25% XP, lives from dolls, enter towns from the side, \
                  wise men restore MP, every engine fix and enemy tweak, the new areas \
                  except the Dark Isle, screen shake and a red flash.",
-            )
+            ))
             .clicked()
         {
             if gameplay_editable {
@@ -270,11 +287,11 @@ pub fn preset_buttons(
 /// launcher shows it.
 pub fn enhancements_section(ui: &mut egui::Ui, e: &mut Enhancements, d: &mut DisplayEnh, o: Opts) {
     ui.add_space(6.0);
-    ui.heading("Enhancements (ZALiA-inspired)");
+    ui.heading(o.lang.tr("Enhancements (ZALiA-inspired)"));
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        intro(ui, e);
-        preset_buttons(ui, e, d, o.gameplay_editable);
+        intro(ui, e, o.lang);
+        preset_buttons(ui, e, d, o.gameplay_editable, o.lang);
         for g in Group::ALL {
             group_ui(ui, g, e, d, o);
         }
@@ -282,10 +299,11 @@ pub fn enhancements_section(ui: &mut egui::Ui, e: &mut Enhancements, d: &mut Dis
 }
 
 fn text_group(ui: &mut egui::Ui, e: &mut Enhancements, d: &mut DisplayEnh, o: Opts) {
-    group(ui, "Text & HUD", "enh-text", o.force_open, true, |ui| {
+    group(ui, o.lang, "Text & HUD", "enh-text", o.force_open, true, |ui| {
         ui.add_enabled_ui(o.gameplay_editable, |ui| {
             slider_u8(
                 ui,
+                o.lang,
                 &mut e.text.dialogue_speed,
                 0..=MAX_DIALOGUE_SPEED,
                 "Dialogue speed",
@@ -294,6 +312,7 @@ fn text_group(ui: &mut egui::Ui, e: &mut Enhancements, d: &mut DisplayEnh, o: Op
             );
             check(
                 ui,
+                o.lang,
                 &mut e.text.protect_spell_name,
                 "Call the SHIELD spell PROTECT",
                 "Renames SHIELD to PROTECT in the spell menu. ZALiA: mod_SpellSHIELD_NAME.",
@@ -301,6 +320,7 @@ fn text_group(ui: &mut egui::Ui, e: &mut Enhancements, d: &mut DisplayEnh, o: Op
         });
         check(
             ui,
+            o.lang,
             &mut d.quest_timer,
             "Show the quest timer",
             "Speedrun-style 00:00:00.00 timer since the quest started (display only). \
@@ -312,6 +332,7 @@ fn text_group(ui: &mut egui::Ui, e: &mut Enhancements, d: &mut DisplayEnh, o: Op
 fn qol_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
     group(
         ui,
+        o.lang,
         "Quality of life",
         "enh-qol",
         o.force_open,
@@ -322,19 +343,20 @@ fn qol_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
                    ZALiA (mod_ContinueFrom): the palace entrance after dying in a palace, the \
                    last town you saved in after dying elsewhere.";
             ui.horizontal(|ui| {
-                ui.label("Continue from").on_hover_text(tip);
+                ui.label(o.lang.tr("Continue from")).on_hover_text(o.lang.tr(tip));
                 egui::ComboBox::from_id_salt("enh-continue")
-                    .selected_text(q.continue_from.label())
+                    .selected_text(o.lang.tr(q.continue_from.label()))
                     .show_ui(ui, |ui| {
                         for c in ContinueFrom::ALL {
-                            ui.selectable_value(&mut q.continue_from, c, c.label());
+                            ui.selectable_value(&mut q.continue_from, c, o.lang.tr(c.label()));
                         }
                     })
                     .response
-                    .on_hover_text(tip);
+                    .on_hover_text(o.lang.tr(tip));
             });
             slider_u8(
                 ui,
+                o.lang,
                 &mut q.gameover_keep_xp_pct,
                 0..=100,
                 "XP kept on game over (%)",
@@ -342,6 +364,7 @@ fn qol_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut q.lives_from_dolls,
                 "Lives from Life Dolls",
                 "Lives start at 3 plus one per Life Doll found, so dolls count for good. \
@@ -349,6 +372,7 @@ fn qol_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut q.enter_town_from_side,
                 "Enter towns from the side you came from",
                 "Start at the left or right end of a town depending on your approach. The \
@@ -356,6 +380,7 @@ fn qol_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut q.wise_men_restore_mp,
                 "Wise men restore MP",
                 "A wise man refills your magic when he teaches his spell. ZALiA: \
@@ -363,6 +388,7 @@ fn qol_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut q.no_mp_requirement_for_spells,
                 "No magic requirement to learn spells",
                 "Learn a spell without the minimum number of magic containers. ZALiA: \
@@ -370,6 +396,7 @@ fn qol_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut q.overworld_softlock_warp,
                 "Overworld softlock warp",
                 "Hold a button chord for 3 seconds while paused on the overworld to warp to the \
@@ -382,6 +409,7 @@ fn qol_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
 fn fixes_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
     group(
         ui,
+        o.lang,
         "Engine fixes",
         "enh-fixes",
         o.force_open,
@@ -390,6 +418,7 @@ fn fixes_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             let f = &mut e.fixes;
             check(
                 ui,
+                o.lang,
                 &mut f.levelup_softlocks,
                 "Level-up softlock fixes",
                 "The level-up window can no longer open during a room change or a dialogue. \
@@ -397,6 +426,7 @@ fn fixes_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut f.iframe_update_skip,
                 "No skipped updates while invincible",
                 "The original skips camera and collision updates on alternate frames when the \
@@ -404,6 +434,7 @@ fn fixes_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut f.jump_direction_balance,
                 "Same jump in both directions",
                 "Full jump speed is slightly easier to reach moving right in the original. \
@@ -411,6 +442,7 @@ fn fixes_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut f.shield_hitbox_symmetry,
                 "Same shield hitbox both ways",
                 "The right-facing shield hitbox sits 2 px further out in the original. ZALiA: \
@@ -418,6 +450,7 @@ fn fixes_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut f.crumble_both_feet,
                 "Crumbling bridges check both feet",
                 "Crumble tiles react to either foot, not only the middle point. ZALiA: \
@@ -425,6 +458,7 @@ fn fixes_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut f.xp_drain_fix,
                 "XP drain fix",
                 "With 10 or less XP pending, the counter drains one at a time and leaves no \
@@ -437,6 +471,7 @@ fn fixes_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
 fn enemies_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
     group(
         ui,
+        o.lang,
         "Enemies & bosses",
         "enh-enemies",
         o.force_open,
@@ -503,7 +538,7 @@ fn enemies_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
                 ),
             ];
             for (v, label, tip) in rows {
-                check(ui, v, label, tip);
+                check(ui, o.lang, v, label, tip);
             }
         },
     );
@@ -512,6 +547,7 @@ fn enemies_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
 fn abilities_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
     group(
         ui,
+        o.lang,
         "Abilities",
         "enh-abilities",
         o.force_open,
@@ -520,18 +556,21 @@ fn abilities_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             let a = &mut e.abilities;
             check(
                 ui,
+                o.lang,
                 &mut a.double_jump,
                 "Double jump",
                 "One extra jump in mid-air. ZALiA: the FEATHER item.",
             );
             check(
                 ui,
+                o.lang,
                 &mut a.stab_frenzy,
                 "Stab frenzy",
                 "Hold B to stab over and over. ZALiA: Options > Other > Stab frenzy.",
             );
             slider_u8(
                 ui,
+                o.lang,
                 &mut a.sword_reach_px,
                 0..=MAX_SWORD_REACH_PX,
                 "Extra sword reach (px)",
@@ -539,6 +578,7 @@ fn abilities_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             slider_u8(
                 ui,
+                o.lang,
                 &mut a.damage_reduction_pct,
                 0..=100,
                 "Damage reduction (%)",
@@ -546,12 +586,14 @@ fn abilities_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut a.mp_regen,
                 "Slow magic regeneration",
                 "+2 MP every 128 frames. ZALiA: the PENDANT item.",
             );
             check(
                 ui,
+                o.lang,
                 &mut a.reflect_more,
                 "Stronger REFLECT",
                 "REFLECT bounces more kinds of shots, and bounced shots hurt enemies. ZALiA: \
@@ -559,6 +601,7 @@ fn abilities_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut a.dash_speed,
                 "Dash",
                 "Run faster on the ground while holding the dash button. ZALiA: Dev tools > \
@@ -566,6 +609,7 @@ fn abilities_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut a.rescue_fairy,
                 "Rescue fairy",
                 "Falling into a pit or lava puts you back on safe ground instead of costing a \
@@ -573,6 +617,7 @@ fn abilities_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             check(
                 ui,
+                o.lang,
                 &mut a.flute_warp,
                 "Flute warp",
                 "On the overworld, Select + B cycles through towns you have visited. ZALiA: \
@@ -585,6 +630,7 @@ fn abilities_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
 fn rando_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
     group(
         ui,
+        o.lang,
         "Randomizer & start",
         "enh-rando",
         o.force_open,
@@ -594,12 +640,13 @@ fn rando_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             ui.horizontal(|ui| {
                 let tip = "Seed for the shuffles. Same seed, same game. ZALiA: File Select > \
                        RANDO > EDIT SEED.";
-                ui.label("Seed").on_hover_text(tip);
-                ui.add(egui::DragValue::new(&mut r.seed)).on_hover_text(tip);
+                ui.label(o.lang.tr("Seed")).on_hover_text(o.lang.tr(tip));
+                ui.add(egui::DragValue::new(&mut r.seed)).on_hover_text(o.lang.tr(tip));
             });
             let lvl = "0 = original (level 1). ZALiA: RANDO > START ATTACK/MAGIC/LIFE.";
             slider_u8(
                 ui,
+                o.lang,
                 &mut r.start_attack,
                 0..=MAX_START_LEVEL,
                 "Start attack level",
@@ -607,6 +654,7 @@ fn rando_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             slider_u8(
                 ui,
+                o.lang,
                 &mut r.start_magic,
                 0..=MAX_START_LEVEL,
                 "Start magic level",
@@ -614,6 +662,7 @@ fn rando_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             slider_u8(
                 ui,
+                o.lang,
                 &mut r.start_life,
                 0..=MAX_START_LEVEL,
                 "Start life level",
@@ -622,6 +671,7 @@ fn rando_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             let cont = "0 = original (4). ZALiA: RANDO > START ITEMS containers.";
             slider_u8(
                 ui,
+                o.lang,
                 &mut r.start_containers_heart,
                 0..=MAX_START_LEVEL,
                 "Start heart containers",
@@ -629,23 +679,26 @@ fn rando_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             slider_u8(
                 ui,
+                o.lang,
                 &mut r.start_containers_magic,
                 0..=MAX_START_LEVEL,
                 "Start magic containers",
                 cont,
             );
-            ui.label("Start spells");
+            ui.label(o.lang.tr("Start spells"));
             let mut spells = u16::from(r.start_spells);
             bit_boxes(
                 ui,
+                o.lang,
                 &mut spells,
                 &SPELLS,
                 "Spells known from the start. ZALiA: RANDO > START SPELLS.",
             );
             r.start_spells = spells as u8;
-            ui.label("Start items and skills");
+            ui.label(o.lang.tr("Start items and skills"));
             bit_boxes(
                 ui,
+                o.lang,
                 &mut r.start_items,
                 &ITEMS,
                 "Items and sword skills owned from the start. ZALiA: RANDO > START ITEMS / \
@@ -653,36 +706,42 @@ fn rando_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             );
             slider_pct(
                 ui,
+                o.lang,
                 &mut r.enemy_hp_pct,
                 "Enemy HP",
                 "0 = original. ZALiA: RANDO > ENEMY HP +/-25%.",
             );
             slider_pct(
                 ui,
+                o.lang,
                 &mut r.enemy_dmg_pct,
                 "Enemy damage",
                 "0 = original. ZALiA: RANDO > ENEMY DAMAGE +/-25%.",
             );
             slider_pct(
                 ui,
+                o.lang,
                 &mut r.xp_pct,
                 "XP gained",
                 "0 = original. ZALiA: RANDO > XP +/-25%.",
             );
             slider_pct(
                 ui,
+                o.lang,
                 &mut r.level_cost_pct,
                 "Level-up cost",
                 "0 = original. ZALiA: RANDO > LEVEL COSTS +/-25%.",
             );
             slider_pct(
                 ui,
+                o.lang,
                 &mut r.spell_cost_pct,
                 "Spell cost",
                 "0 = original. ZALiA: RANDO > SPELL COSTS.",
             );
             slider_u8(
                 ui,
+                o.lang,
                 &mut r.palette_rando,
                 0..=MAX_PALETTE_RANDO,
                 "Palette randomizer",
@@ -692,6 +751,7 @@ fn rando_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             ui.add_enabled_ui(!o.rom_randomized, |ui| {
                 check(
                     ui,
+                    o.lang,
                     &mut r.item_shuffle,
                     "Shuffle item locations",
                     "Items are placed at random, always beatable. ZALiA: RANDO > ITEMS.",
@@ -700,6 +760,7 @@ fn rando_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             if o.rom_randomized {
                 hint(
                     ui,
+                    o.lang,
                     "Item shuffle is off while the ROM randomizer is on: that seed already \
                      placed the items, and this shuffle assumes the original locations. \
                      The other options here apply on top of the seed.",
@@ -712,6 +773,7 @@ fn rando_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
 fn cheats_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
     group(
         ui,
+        o.lang,
         "Cheats",
         "enh-cheats",
         o.force_open,
@@ -720,24 +782,28 @@ fn cheats_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             let c = &mut e.cheats;
             check(
                 ui,
+                o.lang,
                 &mut c.invincible,
                 "Invincible",
                 "Link takes no damage. ZALiA: dev invulnerability (I key).",
             );
             check(
                 ui,
+                o.lang,
                 &mut c.infinite_magic,
                 "Infinite magic",
                 "Magic never runs out. ZALiA: dev stab-to-cheat jars.",
             );
             check(
                 ui,
+                o.lang,
                 &mut c.infinite_lives,
                 "Infinite lives",
                 "The life counter never goes down.",
             );
             check(
                 ui,
+                o.lang,
                 &mut c.max_stats,
                 "Max stats",
                 "Attack, magic and life at level 8 with every container. ZALiA: dev \
@@ -750,6 +816,7 @@ fn cheats_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
 fn content_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
     group(
         ui,
+        o.lang,
         "New areas (ZALiA-inspired)",
         "enh-content",
         o.force_open,
@@ -757,6 +824,7 @@ fn content_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
         |ui| {
             hint(
                 ui,
+                o.lang,
                 "Rooms that are not in the original game. Every layout is original to z2rs, \
                  inspired by ZALiA (HoverBat's Zelda II remake); nothing is copied from it. \
                  In progress: areas not finished yet are saved but have no effect.",
@@ -765,6 +833,7 @@ fn content_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             ui.scope(|ui| {
                 check(
                     ui,
+                    o.lang,
                     &mut c.virtual_rooms,
                     "New areas",
                     "Master switch: lets the game enter rooms that are not in the original \
@@ -806,14 +875,15 @@ fn content_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
                         ),
                     ];
                     for (v, label, tip) in rows {
-                        check(ui, v, label, tip);
+                        check(ui, o.lang, v, label, tip);
                     }
-                    egui::CollapsingHeader::new("Developer")
+                    egui::CollapsingHeader::new(o.lang.tr("Developer"))
                         .id_salt("enh-content-dev")
                         .open(o.force_open.then_some(true))
                         .show(ui, |ui| {
                             check(
                                 ui,
+                                o.lang,
                                 &mut c.test_room,
                                 "Test room",
                                 "A developer room (a few platforms, a Bot, a P-bag) between \
@@ -825,6 +895,7 @@ fn content_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
             if o.rom_randomized {
                 hint(
                     ui,
+                    o.lang,
                     "With the ROM randomizer on, areas whose spare room slot the seed uses \
                      are skipped.",
                 );
@@ -836,14 +907,16 @@ fn content_group(ui: &mut egui::Ui, e: &mut Enhancements, o: Opts) {
 fn graphics_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
     group(
         ui,
+        o.lang,
         "Graphics effects",
         "enh-graphics",
         o.force_open,
         true,
         |ui| {
-            hint(ui, "Display only: these never change the game.");
+            hint(ui, o.lang, "Display only: these never change the game.");
             check(
                 ui,
+                o.lang,
                 &mut d.screen_shake,
                 "Screen shake",
                 "Shake the picture on boss explosions and big hits. ZALiA: Options > Other > \
@@ -853,26 +926,26 @@ fn graphics_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
                    the flashing off (easier on the eyes). ZALiA: Background flashing color \
                    (red there).";
             ui.horizontal(|ui| {
-                ui.label("Flash colour").on_hover_text(tip);
+                ui.label(o.lang.tr("Flash colour")).on_hover_text(o.lang.tr(tip));
                 egui::ComboBox::from_id_salt("enh-flash")
-                    .selected_text(d.flash_color.label())
+                    .selected_text(o.lang.tr(d.flash_color.label()))
                     .show_ui(ui, |ui| {
                         for c in FlashColor::ALL {
-                            ui.selectable_value(&mut d.flash_color, c, c.label());
+                            ui.selectable_value(&mut d.flash_color, c, o.lang.tr(c.label()));
                         }
                     })
                     .response
-                    .on_hover_text(tip);
+                    .on_hover_text(o.lang.tr(tip));
             });
             let tip = "Magnify the gameplay view around Link (display only). The status bar \
                    and the boss life meter stay at their normal size; menus and dialogue \
                    zoom back out. 2x with a 4x HD pack shows each pack pixel as a crisp \
                    block.";
             ui.horizontal(|ui| {
-                ui.label("Camera zoom").on_hover_text(tip);
+                ui.label(o.lang.tr("Camera zoom")).on_hover_text(o.lang.tr(tip));
                 let label = |z: f32| {
                     if z <= 1.0 {
-                        "Off".to_string()
+                        o.lang.tr("Off").to_string()
                     } else {
                         format!("{z}x")
                     }
@@ -885,10 +958,11 @@ fn graphics_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
                         }
                     })
                     .response
-                    .on_hover_text(tip);
+                    .on_hover_text(o.lang.tr(tip));
             });
             check(
                 ui,
+                o.lang,
                 &mut d.effects_enabled,
                 "Post effects",
                 "Turn on the five effects below. ZALiA: Graphics Effects Editor (off there by \
@@ -897,6 +971,7 @@ fn graphics_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
             ui.add_enabled_ui(d.effects_enabled, |ui| {
                 slider_f32(
                     ui,
+                    o.lang,
                     &mut d.brightness,
                     -1.0..=1.0,
                     "Brightness",
@@ -904,6 +979,7 @@ fn graphics_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
                 );
                 slider_f32(
                     ui,
+                    o.lang,
                     &mut d.saturation,
                     -1.0..=1.0,
                     "Saturation",
@@ -911,14 +987,16 @@ fn graphics_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
                 );
                 slider_f32(
                     ui,
+                    o.lang,
                     &mut d.scanlines,
                     0.0..=1.0,
                     "Scanlines",
                     "ZALiA GEE default 0.5.",
                 );
-                slider_f32(ui, &mut d.bloom, 0.0..=1.0, "Bloom", "ZALiA GEE bloom.");
+                slider_f32(ui, o.lang, &mut d.bloom, 0.0..=1.0, "Bloom", "ZALiA GEE bloom.");
                 slider_f32(
                     ui,
+                    o.lang,
                     &mut d.blur,
                     0.0..=1.0,
                     "Blur",
@@ -930,9 +1008,10 @@ fn graphics_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
 }
 
 fn audio_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
-    group(ui, "Audio", "enh-audio", o.force_open, true, |ui| {
+    group(ui, o.lang, "Audio", "enh-audio", o.force_open, true, |ui| {
         slider_u8(
             ui,
+            o.lang,
             &mut d.music_volume,
             0..=MAX_VOLUME,
             "Music volume",
@@ -940,6 +1019,7 @@ fn audio_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
         );
         slider_u8(
             ui,
+            o.lang,
             &mut d.sfx_volume,
             0..=MAX_VOLUME,
             "Sound effects volume",
@@ -947,6 +1027,7 @@ fn audio_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
         );
         check(
             ui,
+            o.lang,
             &mut d.low_hp_beep_reduced,
             "Quieter low-health beep",
             "The low-health beep plays less often after a few repeats. ZALiA: \
@@ -956,27 +1037,31 @@ fn audio_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
 }
 
 fn dev_group(ui: &mut egui::Ui, d: &mut DisplayEnh, o: Opts) {
-    group(ui, "Dev tools", "enh-dev", o.force_open, true, |ui| {
+    group(ui, o.lang, "Dev tools", "enh-dev", o.force_open, true, |ui| {
         check(
             ui,
+            o.lang,
             &mut d.dev_hitboxes,
             "Show collision boxes",
             "Body (green), shield (purple), sword (yellow), enemies (red), and terrain probes (cyan). Uses game collision tables, including HD actor animations.",
         );
         check(
             ui,
+            o.lang,
             &mut d.dev_xy,
             "Show XY points",
             "Draw object positions. ZALiA: Dev tools > XY points.",
         );
         check(
             ui,
+            o.lang,
             &mut d.dev_hp,
             "Show enemy HP",
             "Draw enemy hit points. ZALiA: Dev tools > HP.",
         );
         check(
             ui,
+            o.lang,
             &mut d.dev_framecount,
             "Show frame count",
             "Draw the frame counter. ZALiA: Dev tools > App frame count.",
@@ -1005,6 +1090,7 @@ mod tests {
                     force_open: true,
                     gameplay_editable: editable,
                     rom_randomized: zalia,
+                    lang: Lang::En,
                 };
                 let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
                     enhancements_section(ui, &mut e, &mut d, o);
@@ -1033,6 +1119,7 @@ mod tests {
                     force_open: true,
                     gameplay_editable: true,
                     rom_randomized,
+                    lang: Lang::En,
                 };
                 let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
                     group_ui(ui, Group::Content, &mut e, &mut d, o);
