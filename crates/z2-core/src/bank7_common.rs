@@ -140,10 +140,99 @@ pub(crate) fn inner_jsr_frame(game: &mut Game, site: u16, body: fn(&mut Game)) {
 /// interprets until its `RTS` pops the frame — nothing synthetic lands on
 /// the stack, so dead stack bytes match the ROM's. The caller charges the
 /// `JSR` (6); the body charges itself.
+///
+/// # Translated (MMC5) images
+///
+/// The four MMC1 bank switchers the ports call (`SwapPRG` `$FFCC`,
+/// `SwapCHR` `$FFB1`, `SwapToPRG0` `$FFC5`, `SwapToSavedPRG` `$FFC9`) do not
+/// exist as code there: `$FFB1` holds data, and `$FFCC`/`$FFC9`/`$FFC5` are
+/// the translated image's own MMC5 switchers (`ASL A / ORA #$80 / STA $5115`),
+/// whose register conventions differ from the MMC1 ones the ports assume.
+/// Interpreting those bytes either lands on an illegal opcode or silently
+/// changes `A`, so the call is answered here instead:
+///
+/// * `SwapCHR` — a no-op. The translated image never writes `$5120-$512B`
+///   (verified: no `8D 2X 51` anywhere in its fixed bank); it carries all
+///   512 KiB of CHR statically and shifts the whole window with `$5130`.
+/// * `SwapPRG` — `A << 1 | $80` into MMC5 `$5115`, matching the translated
+///   image's own `ASL A / ORA #$80 / STA $5115`.
+/// * `SwapToSavedPRG` — the bank the image keeps at `$0769`, same encoding.
+/// * `SwapToPRG0` — bank 0, same encoding.
+///
+/// Every other target is handled exactly as on an MMC1 image.
 pub(crate) fn jsr_sub(game: &mut Game, site: u16, target: u16) {
     let sp_ret = game.cpu.sp;
     push_word(game, site.wrapping_add(2));
+    if game.mapper == crate::game::MapperKind::Mmc5 {
+        if mmc5_switcher_call(game, target) {
+            return;
+        }
+    }
     continue_in_frame(game, target, sp_ret);
+}
+
+/// Answer a ported body's call to one of the four MMC1 switchers on a
+/// translated (MMC5) image. Returns `true` when it handled the call.
+///
+/// The byte written to `$5115` is the translated image's own encoding,
+/// reproduced exactly: `ASL A : ORA #$80 : STA $5115`. That value is *not*
+/// a plain bank number — in PRG mode 2 (what this image uses, `$5100 = 2`)
+/// `$5115` drives the 16 KiB window at `$8000`, so its low bit is dropped and
+/// the rest is the 16 KiB bank index. `Mmc5::prg_bank_8k` already models that
+/// masking, so writing the encoded byte straight through is what lands the
+/// right pair of 8 KiB banks (`2*bank` / `2*bank+1`, matching
+/// `enh::prg_offset`'s MMC5 layout).
+///
+/// Proof it is the encoding and not the bank: `Mmc5`'s own test writes
+/// `$5115 = 0x8E` and asserts `$8000` maps to 8 KiB bank 14 — i.e. `0x8E`'s
+/// low bit is ignored and the value is the 16 KiB index `0x8E >> 1 = 0x47`,
+/// which covers 8 KiB banks 14 and 15. So a caller holding bank `N` in `A`
+/// must write `(N << 1) | 0x80`.
+///
+/// `A` is left exactly as the image's own switcher would leave it: after
+/// `ASL A : ORA #$80`, i.e. `(A << 1) | 0x80`.
+fn mmc5_switcher_call(game: &mut Game, target: u16) -> bool {
+    use crate::game::MapperKind;
+    debug_assert_eq!(game.mapper, MapperKind::Mmc5);
+    match target {
+        // `SwapCHR`: the image never writes `$5120-$512B`, so there is no CHR
+        // bank to switch — all 512 KiB is mapped statically and the window
+        // moves with `$5130` instead. Nothing to do, and `A` is untouched
+        // (the image's `$FFB1` is data, so no semantics to copy).
+        0xFFB1 => true,
+        // `SwapPRG`: `A` holds the bank. Reproduce `ASL A : ORA #$80`.
+        0xFFCC => {
+            let encoded = (game.cpu.a << 1) | 0x80;
+            game.cpu.a = encoded;
+            write_prg_bank(game, encoded);
+            true
+        }
+        // `SwapToSavedPRG`: the bank the image parks at `$0769`.
+        0xFFC9 => {
+            let bank = game.ram[0x0769];
+            let encoded = (bank << 1) | 0x80;
+            game.cpu.a = encoded;
+            write_prg_bank(game, encoded);
+            true
+        }
+        // `SwapToPRG0`: `LDA #$00 : BEQ` falls through into `SwapToSavedPRG`'s
+        // body, so it is the same write with `A = 0`.
+        0xFFC5 => {
+            let encoded = 0x80;
+            game.cpu.a = encoded;
+            write_prg_bank(game, encoded);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `STA $5115` plus the PPU re-sync and the 6 cycles the call costs.
+fn write_prg_bank(game: &mut Game, val: u8) {
+    game.mmc5.write(0x5115, val);
+    let cycles = game.cpu.cycles + crate::cpu::BUS_ACCESS_OFFSET;
+    game.ppu.mapper_sync_mmc5(&game.chr, &game.mmc5, cycles);
+    game.cpu.cycles += 6;
 }
 
 /// Continue at `target` inside a `JSR` frame whose `RTS` restores `sp_ret`:

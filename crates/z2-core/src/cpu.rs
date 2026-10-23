@@ -683,7 +683,7 @@ pub(crate) fn bus_write(game: &mut Game, addr: u16, val: u8) {
 /// CPU cycles between an instruction's attributed start (`cpu.cycles` when
 /// the bus access runs) and the cycle the access actually happens on: the
 /// common `LDA/STA/BIT abs` forms touch the bus on their 4th cycle.
-const BUS_ACCESS_OFFSET: u64 = 3;
+pub(crate) const BUS_ACCESS_OFFSET: u64 = 3;
 
 /// Little-endian 16-bit read.
 pub(crate) fn bus_read16(game: &mut Game, addr: u16) -> u16 {

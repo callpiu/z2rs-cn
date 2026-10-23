@@ -1016,19 +1016,33 @@ fn register_native_traps(game: &mut Game) {
     z2_core::boot_traps::register_boot_traps(game);
 }
 
-/// Trap set for a **translated** (MMC5) image.
+/// Trap set for a **translated (MMC5)** image.
 ///
-/// Same groups as [`register_native_traps`], minus the ones whose bodies
-/// hard-code original-ROM byte layout rather than running the ROM itself.
+/// Every group is registered, including `title_traps`, `sideview_traps` and
+/// `overworld_traps`. They used to be left out on the theory that their bodies
+/// `jsr_sub` into fixed-bank successors whose bytes the translated image had
+/// rearranged. Measured against the real ROM, the theory was half right and
+/// half wrong:
 ///
-/// `title_traps` and `sideview_traps` both `jsr_sub` into fixed-bank
-/// addresses and then resume at a hard-coded successor (`$C341`, `$C33E`,
-/// `$FFC9`, `$FFC5`, …). The translated image re-arranged those call sites —
-/// e.g. the original `JSR $FFB1` at `$C341` became `JSR $C03D` — so replaying
-/// the original sequence lands on MMC5 data (`illegal opcode $52 at $FFB1`).
+/// * Of the 23 fixed-bank entry points these groups use, **17 are
+///   byte-identical** to the US image; one more (`$DE6C`) differs only in
+///   leading NOP/data padding before identical code.
+/// * The remaining 5 are the MMC1 serial switchers (`$FF9D`, `$FFB1`,
+///   `$FFC5`, `$FFC9`, `$FFCC`). Four of them are the ones the ports actually
+///   call, and on this image they are **not code**: `$FFB1` holds data and
+///   `$FFCC`/`$FFC9`/`$FFC5` are the image's own MMC5 switchers
+///   (`ASL A / ORA #$80 / STA $5115`) with different register conventions.
+///   Interpreting them either hits an illegal opcode (`$52` at `$FFB1`) or
+///   silently changes `A`, so [`z2_core::bank7_common::jsr_sub`] answers those
+///   four calls itself on MMC5.
+/// * The fifth (`$FF9D`, `ConfigureMMC1`) is skipped by
+///   [`register_bank7_traps`]'s existing `uses_mmc5_switcher` byte check,
+///   which is still correct: it has no MMC5 equivalent.
 ///
-/// Everything else either interprets the ROM's own body (`call_original`) or
-/// only observes state, which is mapper-independent.
+/// The translated image also never writes `$5120-$512B` (verified: no
+/// `8D 2X 51` anywhere in its fixed bank) — it carries all 512 KiB of CHR
+/// statically and shifts the window with `$5130` — so `SwapCHR` is a no-op
+/// there rather than a bank load.
 fn register_translated_traps(game: &mut Game) {
     // `bank7_traps` byte-checks its MMC1 serial switchers and skips them.
     z2_core::bank7_traps::register_bank7_traps(game);
