@@ -639,7 +639,6 @@ impl Compositor {
             }
             let hd_bg = self.paint_hd_background(rec, &input, pack, step, y, out);
             if layered || pack.sprite_alpha_art() || !self.actors.is_empty() {
-                self.resolve_columns(rec, &input, y);
                 self.prepare_layer_rows(pack, step, y);
                 let painted = layered && self.paint_layers(rec, &input, pack, step, y, out);
                 self.replay_sprites_shaped(rec, &input, pack, step, y, hd_bg || painted, out);
@@ -814,13 +813,20 @@ impl Compositor {
         let n = self.scale as usize;
         let src = &input.indexed.pixels[y * self.src_width..(y + 1) * self.src_width];
         let row_bytes = self.out_w * 4;
+        // RGBA per 6-bit NES colour, so the row expand is a table lookup per
+        // pixel instead of a function call.
+        let mut pal = [[0u8; 4]; 64];
+        for (i, e) in pal.iter_mut().enumerate() {
+            *e = input.palette.rgba(i as u8);
+        }
         let first = y * n;
         let (head, tail) = out.split_at_mut((first + 1) * row_bytes);
         let row0 = &mut head[first * row_bytes..];
         for (x, &idx) in src.iter().enumerate() {
-            let rgba = input.palette.rgba(idx);
-            for px in row0[x * n * 4..(x * n + n) * 4].as_chunks_mut::<4>().0 {
-                px.copy_from_slice(&rgba);
+            let rgba = pal[(idx & 0x3F) as usize];
+            let dst = &mut row0[x * n * 4..(x * n + n) * 4];
+            for chunk in dst.as_chunks_mut::<4>().0 {
+                chunk.copy_from_slice(&rgba);
             }
         }
         for r in 0..n.saturating_sub(1) {
@@ -899,15 +905,11 @@ impl Compositor {
         }
         let left_px = (self.src_width.saturating_sub(WIDTH) / 2) as i32;
         let fine_x = i32::from(rec.fine_x & 7);
-        let fill = Self::line_edge_fill(input, y);
-        // Every slot that reaches the source row, margins included. Slot 0's
-        // leading `fine_x` columns land at `wx < 0` and slot 32 spans the
-        // right boundary; `wide_bg_tile` picks each pixel's identity.
         let first = (-left_px + fine_x).div_euclid(8);
         let last = (WIDTH as i32 + left_px - 1 + fine_x).div_euclid(8);
         let mut painted = false;
         for k in first..=last {
-            painted |= self.paint_slot(rec, input, fill, pack, step, y, k, out);
+            painted |= self.paint_slot(rec, input, pack, step, y, k, out);
         }
         painted
     }
@@ -920,16 +922,15 @@ impl Compositor {
         })
     }
 
-    /// Paint the HD cells of slot `k`'s pixels. Each pixel's tile identity
-    /// comes from [`wide_bg_tile`], so a slot that straddles an edge strip or
-    /// the window boundary can take two identities. Returns whether it
-    /// painted.
+    /// Paint the HD cells of slot `k`'s pixels. Each pixel's tile identity is
+    /// the one [`Compositor::resolve_columns`] already stored for its source
+    /// column (a slot that straddles an edge strip or the window boundary
+    /// therefore still takes two identities). Returns whether it painted.
     #[allow(clippy::too_many_arguments)]
     fn paint_slot(
         &self,
         rec: &LineRecord,
         input: &ComposeInput<'_>,
-        fill: EdgeFill,
         pack: &HdPack,
         step: u32,
         y: usize,
@@ -937,69 +938,103 @@ impl Compositor {
         out: &mut [u8],
     ) -> bool {
         let n = self.scale as usize;
-        let left_px = (self.src_width.saturating_sub(WIDTH) / 2) as i32;
-        let fine_x = i32::from(rec.fine_x & 7);
-        let ml = input.margins.map(|m| &m.lines[y]);
         let backdrop = input.palette.rgba(rec.backdrop);
         let ps = pack.scale();
         let mut painted = false;
-        let mut cached: Option<(BgTileId, Option<CellRef>)> = None;
-
-        for px in 0..8i32 {
-            let wx = 8 * k + px - fine_x;
-            if !(-left_px..WIDTH as i32 + left_px).contains(&wx) {
+        // Slot `k` covers window pixels `8k-fine_x .. 8k-fine_x+8`; convert to
+        // source columns `sx = wx + left_px` and clip to the line.
+        let left_px = (self.src_width.saturating_sub(WIDTH) / 2) as i32;
+        let fine_x = i32::from(rec.fine_x & 7);
+        let lo = (8 * k - fine_x).max(-left_px);
+        let hi = (8 * (k + 1) - fine_x).min(WIDTH as i32 + left_px);
+        // Group the slot's columns by tile identity: one `pack.lookup` and one
+        // contiguous copy per group instead of a lookup and a per-pixel loop
+        // per column. `resolve_columns` has already stored every column's
+        // identity, so grouping reads the same scratch arrays.
+        let sx0 = (lo + left_px) as usize;
+        let sx1 = (hi + left_px) as usize;
+        let mut sx = sx0;
+        while sx < sx1 {
+            let id = self.col_id[sx];
+            if !id.fetched || id.page == NO_PAGE {
+                sx += 1;
                 continue;
             }
             // Inside the text window the ROM's own glyphs must show through: a
             // translated ROM puts Chinese text in the very `(page, tile)` slots
             // the pack knows as terrain. `text_box` holds **source pixel
-            // columns** (`text_box_span` indexes the per-pixel `col_id` array),
-            // so compare the window pixel here.
-            let src_x = (wx + left_px).max(0) as usize;
+            // columns**, so compare the source column directly.
             if self
                 .text_box
-                .is_some_and(|(first, last)| (first..=last).contains(&src_x))
+                .is_some_and(|(first, last)| (first..=last).contains(&sx))
             {
+                sx += 1;
                 continue;
             }
-            let (id, sub_x) = wide_bg_tile(rec, ml, fill, wx);
-            debug_assert_eq!(i32::from(sub_x), px);
-            if !id.fetched || id.page == NO_PAGE {
-                continue;
-            }
-            let cell = match cached {
-                Some((c_id, cell)) if c_id == id => cell,
-                _ => {
-                    let cell = pack.lookup(id.page, id.tile, bg_colors(rec, id.pal));
-                    cached = Some((id, cell));
-                    cell
+            // Extend the run while the tile identity (and thus the HD cell)
+            // is the same and no window boundary intervenes.
+            let mut end = sx + 1;
+            while end < sx1 {
+                let nid = self.col_id[end];
+                if nid != id {
+                    break;
                 }
+                if self
+                    .text_box
+                    .is_some_and(|(first, last)| (first..=last).contains(&end))
+                {
+                    break;
+                }
+                end += 1;
+            }
+            let cell = pack.lookup(id.page, id.tile, bg_colors(rec, id.pal));
+            let Some(cell) = cell else {
+                sx = end;
+                continue;
             };
-            let Some(cell) = cell else { continue };
             let cellpx = pack.cell_pixels(cell);
-            let ox = (wx + left_px) as usize;
+            let run = end - sx;
+            let dst_row = y * n * self.out_w + sx * n;
+            // HD x of the run's first pixel inside the cell (the pack may map
+            // several adjacent columns to the same tile, e.g. a wide roof).
+            let px0 = sx as i32 - left_px + fine_x - 8 * k;
+            debug_assert!((0..8).contains(&px0));
+            let px0 = px0 as usize;
             for fy in 0..n {
                 let hd_y = u32::from(id.fine_y & 7) * ps + (fy as u32) * step;
                 let row = cellpx.row(hd_y);
-                let oy = y * n + fy;
-                for fx in 0..n {
-                    let sidx = ((px as u32 * ps + fx as u32 * step) as usize) * 4;
-                    let dst = (oy * self.out_w + ox * n + fx) * 4;
-                    if row[sidx + 3] != 0 {
-                        out[dst..dst + 4].copy_from_slice(&[
-                            row[sidx],
-                            row[sidx + 1],
-                            row[sidx + 2],
-                            0xFF,
-                        ]);
-                    } else {
-                        // Transparent HD background == transparent NES
-                        // background: the line's backdrop colour.
-                        out[dst..dst + 4].copy_from_slice(&backdrop);
+                let dst = (dst_row + fy * self.out_w) * 4;
+                if step == 1 {
+                    // Output scale == pack scale: copy the run's row segment
+                    // verbatim, backdrop where the art is transparent.
+                    let sidx = px0 * ps as usize * 4;
+                    let seg = &row[sidx..sidx + run * n * 4];
+                    let dst_seg = &mut out[dst..dst + run * n * 4];
+                    for (o, chunk) in dst_seg.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                        if seg[o * 4 + 3] != 0 {
+                            chunk.copy_from_slice(&seg[o * 4..o * 4 + 4]);
+                        } else {
+                            // Transparent HD background == transparent NES
+                            // background: the line's backdrop colour.
+                            *chunk = backdrop;
+                        }
+                    }
+                } else {
+                    for fx in 0..run * n {
+                        let sidx = ((px0 as u32 * ps + fx as u32 * step) as usize) * 4;
+                        let d = dst + fx * 4;
+                        if row[sidx + 3] != 0 {
+                            out[d..d + 4].copy_from_slice(&row[sidx..sidx + 4]);
+                        } else {
+                            // Transparent HD background == transparent NES
+                            // background: the line's backdrop colour.
+                            out[d..d + 4].copy_from_slice(&backdrop);
+                        }
                     }
                 }
             }
             painted = true;
+            sx = end;
         }
         painted
     }
@@ -1050,10 +1085,7 @@ impl Compositor {
             return;
         }
 
-        self.resolve_background_layer(rec, input, y);
-        if has_margin {
-            self.resolve_columns(rec, input, y);
-        }
+        self.resolve_background_layer(rec, input);
         let margin_px = self.src_width.saturating_sub(WIDTH) / 2;
         let show_left_spr = rec.mask & PPUMASK_SHOW_LEFT_SPRITES != 0;
         let left_fill = input.margins.is_some_and(|m| left_sprite_fill(m, rec));
@@ -1176,34 +1208,14 @@ impl Compositor {
     /// NES background colour index and opacity per window pixel, exactly as
     /// `render_background` computes them (needed for sprite priority and for
     /// the colour under a hole in HD sprite art).
-    fn resolve_background_layer(&mut self, rec: &LineRecord, input: &ComposeInput<'_>, y: usize) {
-        let show_bg = rec.mask & PPUMASK_SHOW_BG != 0;
-        let show_left_bg = rec.mask & PPUMASK_SHOW_LEFT_BG != 0;
-        // Repainted edge pixels take the recovered background's opacity.
-        let fill = Self::line_edge_fill(input, y);
-        let ml = input.margins.map(|m| &m.lines[y]);
+    fn resolve_background_layer(&mut self, rec: &LineRecord, input: &ComposeInput<'_>) {
+        // `resolve_columns` has already run `wide_bg_tile` — the same tile
+        // identity `render_background` derives — for every column of the line,
+        // so read the answer out of the scratch arrays instead of recomputing
+        // it (this runs on every sprite-replayed line).
         for x in 0..WIDTH {
-            let (idx, opaque) = if !show_bg {
-                (rec.backdrop, false)
-            } else {
-                let repainted = fill.repaints(x as i32);
-                let (id, sub_x) = if repainted {
-                    wide_bg_tile(rec, ml, fill, x as i32)
-                } else {
-                    Self::window_tile(rec, x as i32)
-                };
-                match chr_sub(input.chr_rom, id, sub_x) {
-                    None | Some(0) => (rec.backdrop, false),
-                    Some(sub) if x < 8 && !show_left_bg && !repainted => {
-                        let _ = sub;
-                        (rec.backdrop, false)
-                    }
-                    Some(sub) => (
-                        rec.palette_entry(usize::from(id.pal & 3) * 4 + usize::from(sub)),
-                        true,
-                    ),
-                }
-            };
+            let sx = (self.src_width - WIDTH) / 2 + x;
+            let (opaque, idx) = self.column_bg(rec, input, sx);
             self.bg_index[x] = idx;
             self.bg_opaque[x] = opaque;
         }
@@ -1217,7 +1229,29 @@ impl Compositor {
         let fill = Self::line_edge_fill(input, y);
         let ml = input.margins.map(|m| &m.lines[y]);
         for sx in 0..self.src_width {
-            let (id, sub_x) = wide_bg_tile(rec, ml, fill, sx as i32 - margin_px);
+            let wx = sx as i32 - margin_px;
+            // Fast path for the common interior pixel: no margin, no edge
+            // fill, not in the left-clipped columns — a plain nametable slot.
+            // `wide_bg_tile` handles this too, but its edge cases (left clip,
+            // fill strips, margin lines) cost branches the interior never
+            // takes, and this loop runs for every column of every line.
+            let interior = ml.is_none()
+                && !fill.left
+                && !fill.right
+                && (wx >= if rec.mask & PPUMASK_SHOW_LEFT_BG == 0 { 8 } else { 0 })
+                && wx < WIDTH as i32;
+            let (id, sub_x) = if interior {
+                let fine_x = i32::from(rec.fine_x & 7);
+                let k = (wx + fine_x).div_euclid(8);
+                let id = if (0..RECORD_TILES_PER_LINE as i32).contains(&k) {
+                    rec.tiles[k as usize]
+                } else {
+                    BgTileId::NONE
+                };
+                (id, (wx + fine_x).rem_euclid(8) as u8)
+            } else {
+                wide_bg_tile(rec, ml, fill, wx)
+            };
             let usable = id.fetched && id.page != NO_PAGE;
             self.col_id[sx] = if usable { id } else { BgTileId::NONE };
             self.col_sub[sx] = sub_x;
@@ -1544,7 +1578,7 @@ impl Compositor {
             return;
         }
 
-        self.resolve_background_layer(rec, input, y);
+        self.resolve_background_layer(rec, input);
         let n = self.scale as usize;
         let ps = pack.scale();
         let margin_px = self.src_width.saturating_sub(WIDTH) / 2;

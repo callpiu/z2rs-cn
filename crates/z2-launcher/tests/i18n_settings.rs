@@ -33,7 +33,7 @@ fn old_settings_file_without_language_loads_as_chinese() {
     assert_eq!(s.language, Lang::Zh, "缺字段应落到默认中文");
 }
 
-/// 语言不能影响启动参数（游戏侧不感知）。
+/// 语言只影响 `--ui-language`，不碰其它启动参数。
 #[test]
 fn language_does_not_change_args() {
     let mut a = Settings::default();
@@ -42,7 +42,27 @@ fn language_does_not_change_args() {
     let args_zh = build_args(&a);
     a.language = Lang::En;
     let args_en = build_args(&a);
-    assert_eq!(args_zh, args_en, "语言不该改变启动参数");
+    // The only difference is the UI language flag the game window reads.
+    let only_flag = |args: &[String]| -> Vec<String> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == "--ui-language" {
+                i += 2;
+            } else {
+                out.push(args[i].clone());
+                i += 1;
+            }
+        }
+        out
+    };
+    assert_eq!(
+        only_flag(&args_zh),
+        only_flag(&args_en),
+        "语言只该通过 --ui-language 影响启动参数"
+    );
+    assert!(args_zh.windows(2).any(|w| w == ["--ui-language", "zh"]));
+    assert!(args_en.windows(2).any(|w| w == ["--ui-language", "en"]));
 }
 
 /// 校验信息在中文下必须是中文，英文下必须是英文。
