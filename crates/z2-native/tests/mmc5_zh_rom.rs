@@ -67,6 +67,62 @@ fn rom_bytes() -> Option<Vec<u8>> {
     Some(std::fs::read(p).expect("读 ROM"))
 }
 
+/// The Chinese pause list reuses tile numbers for spells 5-8. Its scanline
+/// IRQ must change the last CHR bank before those rows are fetched.
+#[test]
+fn pause_menu_later_spells_do_not_repeat_the_first_four_names() {
+    let Some(bytes) = rom_bytes() else { return };
+    for no_traps in [false, true] {
+        let mut emu = emu_from_generic_ines(&bytes, 44100,
+            z2_native::app::Features { no_traps, ..Default::default() }).unwrap();
+        boot_into_game(&mut emu);
+        let base = emu.game.save_state();
+        for script in [0, 1] {
+            for learned in [4, 5, 8] {
+                emu.game.load_state(&base);
+                emu.game.ram[0x1D4] = script;
+                emu.game.mmc5.write(0x5130, script);
+                emu.game.ppu.sync_from_mapper_mmc5(&emu.game.chr, &emu.game.mmc5);
+                emu.game.ram[0x77B..0x783].fill(0);
+                emu.game.ram[0x77B..0x77B+learned].fill(1);
+                tap(&mut emu, PAD_START, 1);
+                settle(&mut emu, 180);
+                assert_ne!(emu.game.ram[0x524], 0, "pause menu is open");
+                assert_eq!(emu.game.mmc5.chr_upper2, script);
+                assert_eq!(emu.game.text_rect(), Some(z2_ppu::TextRect::new(112,224,48,208)));
+                assert_eq!(emu.game.mmc5.chr_banks[7], 119, "IRQ selects the later spell glyphs");
+                let frame = emu.game.frame_indexed();
+                if !no_traps {
+                    if let Some(dir) = std::env::var_os("Z2_MENU_QA_DIR") {
+                        let dir = std::path::PathBuf::from(dir);
+                        std::fs::create_dir_all(&dir).unwrap();
+                        std::fs::write(dir.join(format!("spell-{learned}-script-{script}.png")),
+                            z2_ppu::encode_indexed_png(frame)).unwrap();
+                    }
+                }
+                for row in 0..learned.saturating_sub(4) {
+                    let name = |y: usize| -> Vec<u8> {
+                        (y..y+8).flat_map(|y| frame[y*256+128..y*256+144].iter().copied()).collect()
+                    };
+                    assert_ne!(name(56+row*16), name(120+row*16),
+                        "spell {} repeats spell {} (no_traps={no_traps}, script={script})", row+5, row+1);
+                }
+                let state = emu.game.save_state();
+                emu.game.step(0);
+                let expected = emu.game.frame_indexed().to_vec();
+                emu.game.load_state(&state);
+                emu.game.step(0);
+                assert_eq!(emu.game.frame_indexed().as_slice(), expected);
+                tap(&mut emu, PAD_START, 1);
+                settle(&mut emu, 90);
+                assert_eq!(emu.game.ram[0x524], 0, "menu closes normally");
+                assert_eq!(emu.game.text_rect(), None);
+                assert_eq!(emu.game.exec_errors, 0);
+            }
+        }
+    }
+}
+
 #[test]
 fn header_is_mmc5() {
     let Some(bytes) = rom_bytes() else { return };

@@ -32,7 +32,7 @@ use std::collections::HashMap;
 
 use pixels::wgpu;
 use z2_core::enh::{DisplayEnh, Enhancements};
-use z2_enh_ui::{Group, Opts};
+use z2_enh_ui::{Group, Lang, Opts};
 
 use crate::app::{apply_features, Display, Emu, Features, ScaleMode};
 use crate::config::NativeConfig;
@@ -55,12 +55,12 @@ impl Tab {
 
     /// Tab label.
     #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
+    pub fn label(self, lang: Lang) -> &'static str {
+        lang.tr(match self {
             Tab::Game => "Game",
             Tab::Gameplay => "Gameplay",
             Tab::Graphics => "Graphics",
-        }
+        })
     }
 
     /// The shared enhancement groups this tab shows.
@@ -110,6 +110,8 @@ pub const MAX_FAST_FORWARD: u32 = 16;
 /// The UI edits a copy; [`apply`] turns the difference into changes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Model {
+    /// Interface language, inherited from the launcher or native config.
+    pub lang: z2_enh_ui::Lang,
     /// Gameplay enhancements in force.
     pub enhancements: Enhancements,
     /// Display-only enhancements in force.
@@ -144,6 +146,7 @@ impl Model {
         lock: Lock,
     ) -> Self {
         Self {
+            lang: config.ui_language,
             enhancements: feats.enhancements,
             display_enh: display.settings().display_enh,
             fullscreen,
@@ -188,6 +191,10 @@ pub struct Targets<'a> {
 /// widescreen) are ignored while `before.lock` is set, whatever `after` says.
 pub fn apply(before: &Model, after: &Model, t: Targets<'_>) -> Applied {
     let mut out = Applied::default();
+    if after.lang != before.lang {
+        t.config.ui_language = after.lang;
+        out.config_changed = true;
+    }
     let offline = before.gameplay_editable();
     if offline && after.enhancements != before.enhancements {
         t.feats.enhancements = after.enhancements;
@@ -248,14 +255,24 @@ fn hint(ui: &mut egui::Ui, text: &str) {
 
 /// The "Game" tab: the frontend's own options.
 fn game_tab(ui: &mut egui::Ui, m: &mut Model, o: Opts) {
-    ui.checkbox(&mut m.fullscreen, "Fullscreen")
-        .on_hover_text("Borderless fullscreen (also F11, Alt+Enter or Cmd+Ctrl+F).");
+    let lang = o.lang;
+    ui.horizontal(|ui| {
+        ui.label(lang.tr("Interface language"));
+        egui::ComboBox::from_id_salt("ovl-language")
+            .selected_text(match m.lang { Lang::Zh => "简体中文", Lang::En => "English" })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut m.lang, Lang::Zh, "简体中文");
+                ui.selectable_value(&mut m.lang, Lang::En, "English");
+            });
+    });
+    ui.checkbox(&mut m.fullscreen, lang.tr("Fullscreen"))
+        .on_hover_text(lang.tr("Borderless fullscreen (also F11, Alt+Enter or Cmd+Ctrl+F)."));
     let mut integer = m.scale_mode == ScaleMode::Integer;
     if ui
-        .checkbox(&mut integer, "Integer scaling")
+        .checkbox(&mut integer, lang.tr("Integer scaling"))
         .on_hover_text(
-            "Whole-number multiples only: the sharpest pixels, but may leave borders. Off \
-             (fit) fills the window height.",
+            lang.tr("Whole-number multiples only: the sharpest pixels, but may leave borders. Off \
+             (fit) fills the window height."),
         )
         .changed()
     {
@@ -266,16 +283,16 @@ fn game_tab(ui: &mut egui::Ui, m: &mut Model, o: Opts) {
         };
     }
     ui.horizontal(|ui| {
-        let tip = "Extra picture at the sides. With wide gameplay on (config key \
+        let tip = lang.tr("Extra picture at the sides. With wide gameplay on (config key \
                    widescreen_gameplay) enemies live out there too, so this is locked during \
-                   netplay and movie playback.";
-        ui.label("Widescreen").on_hover_text(tip);
+                   netplay and movie playback.");
+        ui.label(lang.tr("Widescreen")).on_hover_text(tip);
         let current = WIDESCREEN_PRESETS
             .iter()
             .find(|(_, v)| z2_ppu::preset_tiles(v) == Some(m.wide_tiles))
             .map_or_else(
-                || format!("{} tiles per side", m.wide_tiles),
-                |(l, _)| (*l).to_string(),
+                || match lang { Lang::Zh => format!("每侧 {} 个图块", m.wide_tiles), Lang::En => format!("{} tiles per side", m.wide_tiles) },
+                |(l, _)| lang.tr(l).to_string(),
             );
         ui.add_enabled_ui(o.gameplay_editable, |ui| {
             egui::ComboBox::from_id_salt("ovl-widescreen")
@@ -283,7 +300,7 @@ fn game_tab(ui: &mut egui::Ui, m: &mut Model, o: Opts) {
                 .show_ui(ui, |ui| {
                     for (label, v) in WIDESCREEN_PRESETS {
                         let tiles = z2_ppu::preset_tiles(v).unwrap_or(0);
-                        ui.selectable_value(&mut m.wide_tiles, tiles, label);
+                        ui.selectable_value(&mut m.wide_tiles, tiles, lang.tr(label));
                     }
                 })
                 .response
@@ -291,36 +308,37 @@ fn game_tab(ui: &mut egui::Ui, m: &mut Model, o: Opts) {
         });
     });
     ui.horizontal(|ui| {
-        let tip = "Game speed while Tab is held.";
-        ui.label("Fast-forward").on_hover_text(tip);
-        ui.add(egui::Slider::new(&mut m.fast_forward_multiplier, 1..=MAX_FAST_FORWARD).suffix("x"))
+        let tip = lang.tr("Game speed while Tab is held.");
+        ui.label(lang.tr("Fast-forward")).on_hover_text(tip);
+        ui.add(egui::Slider::new(&mut m.fast_forward_multiplier, 1..=MAX_FAST_FORWARD).suffix(if lang == Lang::Zh { " 倍" } else { "x" }))
             .on_hover_text(tip);
     });
     ui.checkbox(
         &mut m.pause_on_focus_loss,
-        "Pause while the window is in the background",
+        lang.tr("Pause while the window is in the background"),
     )
-    .on_hover_text("Ignored during netplay, where a paused peer would stall the other.");
+    .on_hover_text(lang.tr("Ignored during netplay, where a paused peer would stall the other."));
 }
 
 /// Draw the options window's contents (tabs and the current tab). Separate
 /// from [`Overlay`] so tests can draw every tab headless.
 pub fn options_ui(ui: &mut egui::Ui, m: &mut Model, tab: &mut Tab, force_open: bool) {
+    let lang = m.lang;
     match m.lock {
         Lock::None => {}
         Lock::Netplay => hint(
             ui,
-            "Online session: the game keeps running and gameplay options are read-only \
-             (both players must use the same ones). Display options still apply.",
+            lang.tr("Online session: the game keeps running and gameplay options are read-only \
+             (both players must use the same ones). Display options still apply."),
         ),
         Lock::Movie => hint(
             ui,
-            "A movie is playing: gameplay options are read-only (they would desync it).",
+            lang.tr("A movie is playing: gameplay options are read-only (they would desync it)."),
         ),
     }
     ui.horizontal(|ui| {
         for t in Tab::ALL {
-            ui.selectable_value(tab, t, t.label());
+            ui.selectable_value(tab, t, t.label(lang));
         }
     });
     ui.separator();
@@ -328,7 +346,7 @@ pub fn options_ui(ui: &mut egui::Ui, m: &mut Model, tab: &mut Tab, force_open: b
         force_open,
         gameplay_editable: m.gameplay_editable(),
         rom_randomized: m.rom_randomized,
-        lang: z2_enh_ui::Lang::En,
+        lang,
     };
     egui::ScrollArea::vertical()
         .auto_shrink([false, true])
@@ -346,11 +364,11 @@ pub fn options_ui(ui: &mut egui::Ui, m: &mut Model, tab: &mut Tab, force_open: b
                     );
                     hint(
                         ui,
-                        "Changes apply at once. Start options (randomizer) take effect on \
-                         the next new game.",
+                        lang.tr("Changes apply at once. Start options (randomizer) take effect on \
+                         the next new game."),
                     );
                 }
-                Tab::Graphics => hint(ui, "Display only: these never change the game."),
+                Tab::Graphics => hint(ui, lang.tr("Display only: these never change the game.")),
             }
             for g in tab.groups() {
                 z2_enh_ui::group_ui(ui, *g, &mut m.enhancements, &mut m.display_enh, o);
@@ -368,6 +386,7 @@ pub fn overlay_ui(
     info: &str,
     force_open: bool,
 ) -> bool {
+    let lang = m.lang;
     let screen = ui.max_rect();
     ui.painter()
         .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(150));
@@ -376,7 +395,7 @@ pub fn overlay_ui(
         (screen.width() - 24.0).clamp(200.0, 560.0),
         (screen.height() - 48.0).max(120.0),
     );
-    egui::Window::new("Options")
+    egui::Window::new(lang.tr("Options")).id(egui::Id::new("in-game-options"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -385,8 +404,8 @@ pub fn overlay_ui(
         .default_width(max.x)
         .show(ui.ctx(), |ui| {
             ui.set_max_height(max.y - 40.0);
-            hint(ui, info);
-            hint(ui, "O or LB + RB + Y closes this menu.");
+            hint(ui, if lang == Lang::Zh { "塞尔达 II：林克的冒险" } else { info });
+            hint(ui, lang.tr("O or LB + RB + Y closes this menu."));
             options_ui(ui, m, tab, force_open);
         });
     !open
@@ -449,6 +468,9 @@ impl Default for Overlay {
 fn new_context() -> egui::Context {
     let ctx = egui::Context::default();
     ctx.set_visuals(egui::Visuals::dark());
+    if z2_enh_ui::font::install(&ctx).is_none() {
+        eprintln!("options: no system CJK font found");
+    }
     ctx
 }
 
@@ -1112,8 +1134,96 @@ mod tests {
     use super::*;
     use crate::app::{DisplaySettings, Features};
 
+    /// Manual visual QA through the same egui context and GPU painter used
+    /// in the game. No desktop capture service is needed. Set
+    /// Z2_OVERLAY_QA_DIR and run this ignored test to export the three tabs.
+    #[test]
+    #[ignore = "requires a GPU and an explicit screenshot output directory"]
+    fn export_options_visual_qa() {
+        fn wait<F: std::future::Future>(f: F) -> F::Output {
+            struct Wake(std::thread::Thread);
+            impl std::task::Wake for Wake {
+                fn wake(self: std::sync::Arc<Self>) { self.0.unpark(); }
+            }
+            let w = std::task::Waker::from(std::sync::Arc::new(Wake(std::thread::current())));
+            let mut cx = std::task::Context::from_waker(&w);
+            let mut f = std::pin::pin!(f);
+            loop {
+                if let std::task::Poll::Ready(value) = f.as_mut().poll(&mut cx) { return value; }
+                std::thread::park();
+            }
+        }
+        let dir = std::path::PathBuf::from(std::env::var_os("Z2_OVERLAY_QA_DIR").expect("output dir"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let instance = wgpu::Instance::default();
+        let adapter = wait(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, queue) = wait(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).unwrap();
+        for (width, height) in [(640u32, 480u32), (1280, 720)] {
+            for tab in Tab::ALL {
+                let ctx = new_context();
+                let mut painter = Painter::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+                let target = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("overlay visual QA"),
+                    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                    mip_level_count: 1, sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = target.create_view(&Default::default());
+                for frame in 0..3 {
+                    let mut m = model(Lock::None);
+                    let mut t = tab;
+                    let mut out = ctx.run_ui(egui::RawInput {
+                        time: Some(frame as f64),
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32))),
+                        ..Default::default()
+                    }, |ui| { overlay_ui(ui, &mut m, &mut t, "z2rs", false); });
+                    for (id, images) in &out.textures_delta.set {
+                        for image in images { painter.update_texture(&device, &queue, *id, image); }
+                    }
+                    let prims = ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    {
+                        let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: None,
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &view, resolve_target: None,
+                                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                            })],
+                            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+                        });
+                    }
+                    painter.paint(&device, &queue, &mut encoder, &view, (width, height), out.pixels_per_point, &prims);
+                    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: None, size: u64::from(width*height*4), mapped_at_creation: false,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    });
+                    encoder.copy_texture_to_buffer(target.as_image_copy(), wgpu::ImageCopyBuffer {
+                        buffer: &buffer,
+                        layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(width*4), rows_per_image: None },
+                    }, wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
+                    queue.submit(Some(encoder.finish()));
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| { tx.send(r).unwrap(); });
+                    device.poll(wgpu::Maintain::Wait);
+                    rx.recv().unwrap().unwrap();
+                    if frame == 2 {
+                        let pixels = buffer.slice(..).get_mapped_range();
+                        let png = z2_render::encode_png_rgba(width, height, &pixels, &[]).unwrap();
+                        std::fs::write(dir.join(format!("options-{tab:?}-{width}x{height}.png")), png).unwrap();
+                    }
+                    buffer.unmap();
+                    out.textures_delta.clear();
+                }
+            }
+        }
+    }
+
     fn model(lock: Lock) -> Model {
         Model {
+            lang: z2_enh_ui::Lang::Zh,
             enhancements: Enhancements::default(),
             display_enh: DisplayEnh::default(),
             fullscreen: false,
@@ -1123,6 +1233,46 @@ mod tests {
             wide_tiles: 0,
             lock,
             rom_randomized: false,
+        }
+    }
+
+    /// Inspect the text actually submitted to egui, including every expanded
+    /// group, rather than only checking the translation table.
+    #[test]
+    fn every_options_tab_uses_the_selected_language() {
+        fn texts(s: &egui::Shape, out: &mut Vec<String>) {
+            match s {
+                egui::Shape::Vec(v) => for s in v { texts(s, out); },
+                egui::Shape::Text(t) => out.push(t.galley.job.text.clone()),
+                _ => {}
+            }
+        }
+        for lang in [Lang::Zh, Lang::En] {
+            for t in Tab::ALL {
+                let ctx = new_context();
+                let mut m = model(Lock::None);
+                m.lang = lang;
+                let mut labels = Vec::new();
+                for frame in 0..3 {
+                    let mut out = ctx.run_ui(egui::RawInput {
+                        time: Some(frame as f64),
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 30000.0))),
+                        ..Default::default()
+                    }, |ui| { options_ui(ui, &mut m, &mut t.clone(), true); });
+                    for s in &out.shapes { texts(&s.shape, &mut labels); }
+                    out.textures_delta.clear();
+                }
+                assert!(labels.iter().any(|s| s == t.label(lang)), "tab {t:?}");
+                let han = |s: &str| s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+                if lang == Lang::Zh {
+                    let left: Vec<_> = labels.iter().filter(|s| !han(s)
+                        && s.chars().filter(|c| c.is_ascii_alphabetic()).count() > 3
+                        && !s.starts_with('$')).collect();
+                    assert!(left.is_empty(), "{t:?} untranslated: {left:?}");
+                } else {
+                    assert!(!labels.iter().any(|s| han(s)), "{t:?}: {labels:?}");
+                }
+            }
         }
     }
 
@@ -1248,6 +1398,7 @@ mod tests {
         after.pause_on_focus_loss = false;
         after.fullscreen = true;
         after.wide_tiles = 11;
+        after.lang = Lang::En;
         let applied = apply(
             &before,
             &after,
@@ -1260,6 +1411,7 @@ mod tests {
             },
         );
         assert!(applied.config_changed);
+        assert_eq!(config.ui_language, Lang::En);
         assert_eq!(applied.fullscreen, Some(true));
         assert_eq!(
             *emu.game.enhancements(),

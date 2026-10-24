@@ -317,6 +317,10 @@ pub fn build_args(s: &Settings) -> Vec<String> {
         push("--rom", Some(rom.to_string()));
     }
     push("--scale", Some(s.scale.to_string()));
+    push("--ui-language", Some(match s.language {
+        Lang::Zh => "zh",
+        Lang::En => "en",
+    }.to_string()));
     if s.fullscreen {
         push("--fullscreen", None);
     }
@@ -811,6 +815,8 @@ mod tests {
             vec![
                 "--scale",
                 "3",
+                "--ui-language",
+                "zh",
                 "--scale-mode",
                 "fit",
                 "--widescreen",
@@ -839,6 +845,8 @@ mod tests {
                 "/roms/z2.nes",
                 "--scale",
                 "4",
+                "--ui-language",
+                "zh",
                 "--fullscreen",
                 "--scale-mode",
                 "fit",
@@ -869,6 +877,15 @@ mod tests {
     }
 
     #[test]
+    fn game_options_follow_launcher_language() {
+        let mut s = Settings::default();
+        s.language = Lang::En;
+        assert!(build_args(&s).windows(2).any(|w| w == ["--ui-language", "en"]));
+        s.language = Lang::Zh;
+        assert!(build_args(&s).windows(2).any(|w| w == ["--ui-language", "zh"]));
+    }
+
+    #[test]
     fn local_coop_args() {
         let mut s = Settings {
             multiplayer: Multiplayer::Local,
@@ -892,7 +909,7 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(
-            build_args(&s)[8..],
+            build_args(&s)[10..],
             [
                 "--coop-host",
                 "zelda-night",

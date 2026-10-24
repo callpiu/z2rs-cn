@@ -329,6 +329,9 @@ impl Default for NetplayConfig {
 /// Full native-frontend configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NativeConfig {
+    /// Language of the in-game options overlay.
+    #[serde(default = "default_ui_language")]
+    pub ui_language: z2_enh_ui::Lang,
     /// Explicit ROM path (`--rom` overrides). `None` = ask via CLI error.
     #[serde(default)]
     pub rom_path: Option<String>,
@@ -480,6 +483,10 @@ pub struct NativeConfig {
     pub allow_opposing_directions: bool,
 }
 
+fn default_ui_language() -> z2_enh_ui::Lang {
+    z2_enh_ui::Lang::Zh
+}
+
 fn default_gpu_backend() -> String {
     "auto".to_string()
 }
@@ -512,6 +519,7 @@ fn default_audio_buffer_frames() -> u32 {
 impl Default for NativeConfig {
     fn default() -> Self {
         Self {
+            ui_language: default_ui_language(),
             rom_path: None,
             data_dir_override: None,
             audio_rate: default_audio_rate(),
@@ -739,6 +747,7 @@ mod tests {
             "gamepad": { "map": { "South": 0 } }
         }"#;
         let c: NativeConfig = serde_json::from_str(old).expect("old config parses");
+        assert_eq!(c.ui_language, z2_enh_ui::Lang::Zh);
         // Old keys survive …
         assert_eq!(c.rom_path.as_deref(), Some("/tmp/z2.nes"));
         assert_eq!(c.effective_audio_rate(), 48000);

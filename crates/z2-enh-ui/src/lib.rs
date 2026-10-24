@@ -19,6 +19,7 @@
 use egui::RichText;
 
 pub mod i18n;
+pub mod font;
 pub use i18n::Lang;
 
 use z2_core::enh::{

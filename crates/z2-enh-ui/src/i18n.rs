@@ -39,6 +39,28 @@ impl Lang {
 /// `(english, 简体中文)`. Order follows the panel's layout so a reader can find
 /// an entry by walking the UI top to bottom.
 const ZH: &[(&str, &str)] = &[
+    // In-game O-key options.
+    ("Options", "设置"),
+    ("Game", "游戏"),
+    ("Gameplay", "玩法增强"),
+    ("Graphics", "画面"),
+    ("Interface language", "界面语言"),
+    ("Fullscreen", "全屏"),
+    ("Borderless fullscreen (also F11, Alt+Enter or Cmd+Ctrl+F).", "无边框全屏，也可按 F11、Alt+Enter 或 Cmd+Ctrl+F 切换。"),
+    ("Integer scaling", "整数倍缩放"),
+    ("Whole-number multiples only: the sharpest pixels, but may leave borders. Off (fit) fills the window height.", "按整数倍放大，像素更清晰，但可能留有黑边。关闭后按窗口高度适配画面。"),
+    ("Extra picture at the sides. With wide gameplay on (config key widescreen_gameplay) enemies live out there too, so this is locked during netplay and movie playback.", "扩展两侧画面。启用宽屏玩法后，敌人也会在扩展区域活动，因此联机和录像回放期间无法修改。"),
+    ("Widescreen", "宽屏"),
+    ("Off (4:3)", "关闭（4:3）"),
+    ("Game speed while Tab is held.", "按住 Tab 时的游戏速度。"),
+    ("Fast-forward", "快进速度"),
+    ("Pause while the window is in the background", "切到后台时暂停游戏"),
+    ("Ignored during netplay, where a paused peer would stall the other.", "联机时此选项无效，以免一方暂停导致另一方等待。"),
+    ("Online session: the game keeps running and gameplay options are read-only (both players must use the same ones). Display options still apply.", "联机中：游戏继续运行，玩法选项暂时无法修改，双方必须保持一致；画面选项仍可调整。"),
+    ("A movie is playing: gameplay options are read-only (they would desync it).", "录像回放中：玩法选项暂时无法修改，以免回放失去同步。"),
+    ("Changes apply at once. Start options (randomizer) take effect on the next new game.", "修改立即生效；随机化的开局选项在下次新游戏时生效。"),
+    ("O or LB + RB + Y closes this menu.", "按 O、Esc 或手柄 LB + RB + Y 关闭菜单。"),
+
     // -- item / spell names (start-items bit boxes) ---------------------
     ("Shield", "盾"),
     ("Jump", "跳跃"),

@@ -90,6 +90,8 @@ pub struct Mmc5 {
     /// `$5204` bit 6: `true` while the PPU beam is inside the visible frame,
     /// `false` in the vblank band (see [`Self::on_scanline`]).
     pub in_frame: bool,
+    /// Last beam line clocked by the CPU (u16::MAX before the first clock).
+    pub last_scanline: u16,
     /// `$5205`: multiplicand.
     pub mul_a: u8,
     /// `$5206`: multiplier.
@@ -127,6 +129,7 @@ impl Mmc5 {
             irq_enabled: false,
             irq_pending: false,
             in_frame: false,
+            last_scanline: u16::MAX,
             mul_a: 0,
             mul_b: 0,
             exram: [0; 1024],
@@ -395,8 +398,8 @@ impl Mmc5 {
         u16::from(self.mul_a) * u16::from(self.mul_b)
     }
 
-    /// Called by the PPU once per scanline with the current scanline number;
-    /// raises the IRQ when it matches `$5203`.
+    /// Clock the current beam line from the CPU instruction boundary. Repeated
+    /// clocks of one line are ignored; crossing `$5203` latches an IRQ event.
     ///
     /// Also tracks the `$5204` bit 6 "in frame" status: it reads `$00` while
     /// the beam is in the vblank band (scanlines 240-260, pre-render
@@ -404,11 +407,21 @@ impl Mmc5 {
     /// beam is in the visible frame. The translated ROM polls this bit from
     /// its NMI handler, so it must not be a constant.
     pub fn on_scanline(&mut self, line: u16) {
-        self.in_frame = match line {
-            240..=260 => false,
-            _ => true,
+        if self.last_scanline == line {
+            return;
+        }
+        // DMA and atomic Rust traps can advance across several lines. Clock
+        // the crossed target as well as an exact hit, once per frame. Line 0
+        // resets the hardware counter; a zero target never requests an IRQ.
+        let first = if self.last_scanline >= 240 || line < self.last_scanline {
+            0
+        } else {
+            self.last_scanline + 1
         };
-        if self.irq_enabled && line == u16::from(self.irq_target) {
+        self.last_scanline = line;
+        self.in_frame = line < 240;
+        let target = u16::from(self.irq_target);
+        if self.in_frame && target != 0 && (first..=line).contains(&target) {
             self.irq_pending = true;
         }
     }
@@ -433,12 +446,10 @@ impl Mmc5 {
             0x5203 => self.irq_target = val,
             0x5204 => {
                 // Bit 7 = IRQ enable, bit 6 = "in frame". Writes only touch
-                // bit 7; clearing it also drops a pending IRQ (the pending
-                // flip-flop is only cleared by reading $5204 or disabling).
+                // bit 7; pending status is acknowledged by reading $5204.
                 self.irq_enabled = val & 0x80 != 0;
-                if !self.irq_enabled {
-                    self.irq_pending = false;
-                }
+                // Disabling gates the CPU IRQ line; only a status read
+                // acknowledges the pending scanline event.
             }
             0x5205 => self.mul_a = val,
             0x5206 => self.mul_b = val,
@@ -650,6 +661,29 @@ mod tests {
         assert!(m.irq_pending);
         assert_eq!(m.read(0x5204).map(|v| v & 0x80), Some(0x80));
         assert!(!m.irq_pending, "读 $5204 应清 pending");
+        m.on_scanline(100);
+        assert!(!m.irq_pending, "same line must not retrigger after acknowledgement");
+        m.on_scanline(240);
+        m.on_scanline(100);
+        assert!(m.irq_pending, "the next frame must trigger again");
+    }
+
+    #[test]
+    fn masked_irq_still_latches_and_skipped_lines_are_clocked() {
+        let mut m = Mmc5::new();
+        m.write(0x5203, 113);
+        m.on_scanline(110);
+        m.on_scanline(115);
+        assert!(m.irq_pending);
+        m.write(0x5204, 0x80);
+        assert!(m.irq_pending && m.irq_enabled);
+        m.write(0x5204, 0);
+        assert!(m.irq_pending && !m.irq_enabled);
+        assert_eq!(m.read(0x5204), Some(0xC0));
+        m.write(0x5203, 0);
+        m.on_scanline(240);
+        m.on_scanline(0);
+        assert!(!m.irq_pending, "zero resets the counter without an IRQ");
     }
 
     #[test]

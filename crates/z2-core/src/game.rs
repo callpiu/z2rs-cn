@@ -1003,7 +1003,8 @@ impl Game {
     /// border tiles `$CA-$CC` at columns 14..=27):
     ///
     /// * dialogue box — x 112..224, y 32..96;
-    /// * pause pane — x 112..224, y 104..208 (`$0524 != 0`);
+    /// * pause pane — x 112..224, y 104..208; MMC5 Chinese: y 48..208
+    ///   (`$0524 != 0`);
     /// * title / name entry / save menus — the whole screen.
     #[cfg(feature = "interp")]
     #[must_use]
@@ -1029,7 +1030,7 @@ impl Game {
             return Some(z2_ppu::TextRect::new(
                 BOX_X.start,
                 BOX_X.end,
-                PAUSE_Y.start,
+                if self.mapper == MapperKind::Mmc5 { 48 } else { PAUSE_Y.start },
                 PAUSE_Y.end,
             ));
         }

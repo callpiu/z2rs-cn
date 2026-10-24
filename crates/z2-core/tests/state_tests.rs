@@ -495,3 +495,25 @@ fn enh_state_round_trips_and_version_2_images_still_load() {
     c.load_state(&old);
     assert_eq!(c.enh_state, z2_core::enh::EnhState::default());
 }
+
+#[test]
+fn mmc5_irq_clock_round_trips_and_version_4_still_loads() {
+    let mut game = synth_game();
+    game.mapper = z2_core::game::MapperKind::Mmc5;
+    game.mmc5.write(0x5203, 113);
+    game.mmc5.on_scanline(120);
+    let bytes = game.save_state().to_bytes();
+    let mut restored = synth_game();
+    restored.mapper = z2_core::game::MapperKind::Mmc5;
+    restored.load_state(&GameState::from_bytes(&bytes).unwrap());
+    assert_eq!(restored.mmc5.last_scanline, 120);
+    assert!(restored.mmc5.irq_pending);
+    restored.mmc5.read(0x5204);
+    restored.mmc5.on_scanline(120);
+    assert!(!restored.mmc5.irq_pending);
+    let mut v4 = bytes;
+    v4.truncate(v4.len()-2);
+    v4[4..6].copy_from_slice(&4u16.to_le_bytes());
+    restored.load_state(&GameState::from_bytes(&v4).expect("v4 compatibility"));
+    assert_eq!(restored.mmc5.last_scanline, u16::MAX);
+}

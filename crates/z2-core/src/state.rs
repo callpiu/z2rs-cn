@@ -90,7 +90,8 @@ pub const STATE_MAGIC: [u8; 4] = *b"Z2GS";
 /// Format version of [`GameState::to_bytes`].
 ///
 /// Version 4 added the MMC5 mapper block (see [`GameState::mmc5`]).
-pub const STATE_VERSION: u16 = 4;
+/// Version 5 also saves the MMC5 scanline clock (versions 1-4 still load).
+pub const STATE_VERSION: u16 = 5;
 
 /// Complete snapshot of a [`Game`]'s live emulation state (see the module
 /// docs for the per-field capture table).
@@ -314,6 +315,9 @@ impl GameState {
             s.mmc5_in_use = r.bool()?;
             if s.mmc5_in_use {
                 s.mmc5 = read_mmc5(&mut r)?;
+                if version >= 5 {
+                    s.mmc5.last_scanline = r.u16()?;
+                }
             }
         }
         if !r.0.is_empty() {
@@ -343,6 +347,7 @@ fn write_mmc5(w: &mut Writer, m: &Mmc5) {
     w.bool(m.irq_pending);
     w.bool(m.in_frame);
     w.bytes(&m.exram);
+    w.u16(m.last_scanline);
 }
 
 fn read_mmc5(r: &mut Reader<'_>) -> Result<Mmc5, StateError> {

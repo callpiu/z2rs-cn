@@ -2337,6 +2337,8 @@ pub struct NativeArgs {
     /// `--scale-mode fit|integer` (overrides the `scale_mode` config key).
     /// Display only.
     pub scale_mode: Option<ScaleMode>,
+    /// `--ui-language zh|en`: language of the in-game options.
+    pub ui_language: Option<z2_enh_ui::Lang>,
     /// `--no-discord`: no Discord Rich Presence this run (config key
     /// `discord_presence`).
     pub no_discord: bool,
@@ -2446,6 +2448,7 @@ usage: z2-native [--rom PATH] [--movie M.fm2|.bk2] [--config PATH]
   --scale-mode M   fit (default: fill the window/screen height, any size) or
                    integer (whole multiples only; sharper, may leave borders).
                    Config key scale_mode.
+  --ui-language L  in-game options language: zh (default) or en.
   --hd-record DIR  on exit, write a template pack of the tiles this session drew.
                    ROM-derived output: DIR must be outside any git work tree.
   --coop-local     two players on this machine (P2: keys_p2 / second gamepad).
@@ -2649,6 +2652,14 @@ pub fn parse_native_args(argv: &[String]) -> Result<NativeArgs, String> {
                 out.scale = Some(n);
             }
             "--fullscreen" => out.fullscreen = true,
+            "--ui-language" => {
+                let raw = native_arg_value(&mut it, "--ui-language")?;
+                out.ui_language = Some(match raw.as_str() {
+                    "zh" => z2_enh_ui::Lang::Zh,
+                    "en" => z2_enh_ui::Lang::En,
+                    _ => return Err(format!("--ui-language expects zh | en, got '{raw}'")),
+                });
+            }
             "--no-discord" => out.no_discord = true,
             "--scale-mode" => {
                 let raw = native_arg_value(&mut it, "--scale-mode")?;
@@ -2817,6 +2828,9 @@ pub fn run_windowed_with(
         Some(p) => NativeConfig::load_from(Path::new(p)),
         None => NativeConfig::load(),
     };
+    if let Some(lang) = args.ui_language {
+        config.ui_language = lang;
+    }
     if let Some(spec) = &args.pad_map {
         // Validated at parse time; applied over the file's tables, never saved.
         config.gamepad.apply_spec(spec)?;
@@ -6512,6 +6526,16 @@ mod tests {
             .chain(args.iter().copied())
             .map(str::to_string)
             .collect()
+    }
+
+    #[test]
+    fn ui_language_flag_parses_and_rejects_bad_values() {
+        for (value, lang) in [("zh", z2_enh_ui::Lang::Zh), ("en", z2_enh_ui::Lang::En)] {
+            assert_eq!(parse_native_args(&sv(&["--ui-language", value])).unwrap().ui_language, Some(lang));
+        }
+        assert!(parse_native_args(&sv(&["--ui-language", "xx"])).is_err());
+        assert!(parse_native_args(&sv(&["--ui-language"])).is_err());
+        assert_eq!(parse_native_args(&sv(&[])).unwrap().ui_language, None);
     }
 
     #[test]

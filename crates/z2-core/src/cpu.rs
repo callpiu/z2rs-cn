@@ -263,10 +263,22 @@ impl Cpu {
 
     /// Service latched NMI/IRQ edges (NMI wins; IRQ needs `I` clear).
     pub(crate) fn service_pending(game: &mut Game) {
+        let mapper_irq = if game.mapper == crate::game::MapperKind::Mmc5 {
+            let (line, _) = game.ppu.beam_for_cycles(game.cpu.cycles);
+            let line = if line < 0 || !game.ppu.model().rendering_enabled() {
+                240
+            } else {
+                line as u16
+            };
+            game.mmc5.on_scanline(line);
+            game.mmc5.irq_enabled && game.mmc5.irq_pending
+        } else {
+            false
+        };
         if game.cpu.nmi_pending {
             game.cpu.nmi_pending = false;
             service_nmi(game);
-        } else if game.cpu.irq_pending && game.cpu.p & FLAG_I == 0 {
+        } else if (game.cpu.irq_pending || mapper_irq) && game.cpu.p & FLAG_I == 0 {
             game.cpu.irq_pending = false;
             service_irq(game);
         }
