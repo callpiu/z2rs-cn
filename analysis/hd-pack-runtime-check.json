@@ -1,0 +1,40 @@
+{
+  "captured_at": "2026-10-24T18:50:03.3283188+08:00",
+  "executable": {
+    "path": "D:\\z2rs-中文版\\z2rs.exe",
+    "sha256": "C3421E3491A0A18AA76EEC00F9B35ABB9D30A57040FE72FF619E90C7390483C5"
+  },
+  "source_revision": "975b9008bef029af6480698ce5271f6ec1531ba7",
+  "rom": "D:\\z2rs-中文版\\Zelda II - The Adventure of Link (U) [20260806_NOKOH].nes",
+  "hd_pack": "D:\\下载\\Compressed\\z2rs-hd-pack-2026.10.22-unoutlined_2\\z2rs-hd-pack-2026.10.22-unoutlined",
+  "launch": [
+    "--fullscreen",
+    "--widescreen",
+    "16:9",
+    "--wide-gameplay",
+    "on",
+    "--margin-sprites",
+    "on",
+    "--hd-scale",
+    "3",
+    "--no-discord"
+  ],
+  "result": {
+    "alive_after_12_seconds": true,
+    "exit_code": 0,
+    "first_frame_presented": true,
+    "gpu_backend": "DX12",
+    "event_loop": "exited normally",
+    "hd_pack_loaded": true,
+    "tiles": 78,
+    "palette_variants": 1093,
+    "actor_clips": 737,
+    "effective_pack_scale": 4,
+    "parse_or_gpu_errors": false,
+    "discord_ipc_error_suppressed": true
+  },
+  "logs": [
+    "C:\\Users\\ezplayer\\AppData\\Roaming\\z2rs\\z2-native.log",
+    "C:\\Users\\ezplayer\\AppData\\Roaming\\z2rs\\last-game.log"
+  ]
+}
