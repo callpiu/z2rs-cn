@@ -186,7 +186,11 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           [ "$GITHUB_REF_TYPE" = tag ] || version="0.0.0"
-          Z2RS_VERSION="$version" tools/android/build.sh --apk release
+          # Called through bash so a checkout without the executable bit
+          # cannot fail the build with exit code 126. The Gradle wrapper is
+          # chmod-ed for the same reason.
+          chmod +x tools/android/build.sh tools/android/device.sh android/gradlew
+          Z2RS_VERSION="$version" bash tools/android/build.sh --apk release
 
       - name: Sign
         shell: bash
